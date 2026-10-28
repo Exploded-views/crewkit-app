@@ -6,14 +6,14 @@
 
 **Architecture:** Tauri 2. A Rust core owns everything that touches the machine: running CLIs through one serialized runner, parsing crewkit's versioned JSON, herdr's local socket and remote bridges, the scheduler, the tray, and launching terminals. A Svelte 5 UI renders state it gets from Tauri commands and events, and never calls a shell. No daemon: everything is a child of the app and ends with it.
 
-**Tech Stack:** Rust (stable, edition 2021), Tauri 2.x with `tauri-plugin-autostart`, tokio, serde/serde_json, `schemars`-generated types from herdr's schema; Svelte 5 + Vite + TypeScript; vitest + @testing-library/svelte; GitHub Actions on free hosted runners (macos-14, ubuntu-24.04, windows-2022). Pin exact versions in `Cargo.lock` and `package-lock.json`, using versions at least two weeks old at scaffold time.
+**Tech Stack:** Rust (latest stable, edition 2024, pinned in `rust-toolchain.toml`), Tauri 2 (latest 2.x) with `tauri-plugin-autostart`, tokio, serde/serde_json, `schemars`-generated types from herdr's schema; Svelte 5 + Vite + TypeScript; vitest + @testing-library/svelte; GitHub Actions on free hosted runners (`macos-latest`, `ubuntu-latest`, `windows-latest`). Every dependency, tool and runner image at its newest stable release (at least 2 days old) at scaffold time (owner: "built on current latest for everything we can ... no old versions if possible"), pinned exactly in `Cargo.lock`, `package-lock.json`, `rust-toolchain.toml` and the workflow files. Kept current by Dependabot and an outdated-check in CI (Task 1).
 
 **Spec:** crewkit-dev `docs/superpowers/specs/2026-10-27-crewkit-app-design.md` (private dev repo; read it with this plan). Related: crewkit-dev#69 (uninstall, not in release 1), claude-utils#19 (memsync `--json`), and Issue A (`--json` for status, doctor and dry runs), routed to the crewkit builder as a front-door spec amendment.
 
 ## Global Constraints
 
 - Public repo from the first commit: codenames only (`softlanding` = client, `thehalf` = homelab), no hostnames, IPs, ssh targets, person or client names in code, tests, fixtures, screenshots or docs.
-- Before every push: crewkit-dev's `tools/scrub.sh --require-denylist --all`, then `gitleaks detect --redact`, chained in the pre-push hook so either failure blocks the push. Never bypass hooks (`--no-verify`).
+- Before every push: crewkit-dev's `tools/scrub.sh --require-denylist --all`, then `gitleaks detect --redact`, chained in the pre-push hook so either failure blocks the push. Never bypass hooks (`--no-verify`). Every gate in "Quality Bar" is blocking.
 - No secrets in the repo or in CI. CI runs only on free GitHub-hosted runners, builds and tests unsigned artifacts, and has no signing step.
 - No daemon or helper process of its own. Closing the window leaves only the menu-bar item.
 - Lightness budget: idle with the window closed under 50 MB RSS and no CPU when nothing changes; window open on the map under 150 MB; cold start to a drawn map from cached state under one second. A regression past budget blocks the release.
@@ -24,7 +24,118 @@
 - The app never runs an agent headless and never performs an owner-only step.
 - Timings from the spec: remote refresh every 5 minutes and on wake; doctor at launch, on wake, and hourly; anti-flap hold of 5 seconds before an alert.
 - Exit codes are crewkit's (`docs/exit-codes.md`): 0, 1, 3 (paused: owner steps), 43 (needs a terminal), 64, 65, 75, 78. The app adds none.
+- Latest stable everything: Rust toolchain, edition 2024, Tauri 2, Svelte 5, Vite, TypeScript, Node LTS, GitHub runner images (`macos-latest`, `ubuntu-latest`, `windows-latest`) and Actions pinned to their latest release by commit SHA. No pre-releases. A 2-day cooldown (owner: "a day or two old is fine"): take the newest stable release once it is at least 2 days old. Dependabot (free) opens update PRs for cargo, npm and github-actions with `cooldown: default-days: 2`; CI's `outdated` job (`cargo outdated --exit-code 1 --root-deps-only`, `npm outdated`) fails when a direct dependency is behind its newest stable release that is at least 2 days old. No old version of an actively maintained package anywhere (owner: "i don't want you building on a two year old package anywhere if it's active"): transitive dependencies resolve to their newest compatible release (`cargo update` and `npm update` in every Dependabot run), the lockfiles are checked by `cargo outdated --exit-code 1` (all depths) and `npm outdated --all`, and an older version is allowed only where an upstream package we depend on pins it. Each exception is listed in `docs/dependency-exceptions.md` with the pinning package and a link, and the list is re-checked in CI. `cargo deny` fails on any crate flagged unmaintained (RustSec), and we don't choose a package whose last release is over a year old when a maintained alternative exists.
 - Accept only schema majors `crewkit.status/v1`, `crewkit.doctor/v1`, `crewkit.plan/v1`; refuse others with a clear message.
+
+## Quality Bar
+
+Owner: code quality must be "impeccable", at least as strict as the owner's three strictest app repos, raised wherever none of them goes far enough. Every gate is **blocking** from the first commit. Nothing is warn-only, and there is no legacy baseline. Task 1 builds all of it; every later task must pass it.
+
+### Rust
+
+- `rustfmt --check`.
+- `cargo clippy --all-targets --all-features -- -D warnings`, with `[lints]` in `Cargo.toml`:
+  - `clippy::all`, `pedantic` and `cargo` = deny;
+  - `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro`, `print_stdout`, `print_stderr` = deny outside `#[cfg(test)]`;
+  - `cognitive_complexity` = deny with `cognitive-complexity-threshold = 15` in `clippy.toml`;
+  - `rust.unsafe_code = "forbid"`, `unused_must_use = "deny"`, `missing_debug_implementations = "deny"`;
+  - `RUSTFLAGS=-D warnings` in CI.
+- `cargo deny check`: advisories (any vulnerability or unmaintained crate fails), bans (no duplicate major versions without a listed exception), licenses (allow MIT, Apache-2.0, BSD-2/3-Clause, ISC, Zlib, Unicode-3.0 only), sources (crates.io only).
+
+### TypeScript and Svelte
+
+- `tsconfig`:
+  - `strict`;
+  - `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`, `noPropertyAccessFromIndexSignature`;
+  - `noUnusedLocals`, `noUnusedParameters`, `noFallthroughCasesInSwitch`;
+  - `verbatimModuleSyntax`, `erasableSyntaxOnly`, `isolatedModules`.
+- ESLint 9 flat config:
+  - `typescript-eslint` `strictTypeChecked` and `stylisticTypeChecked`, type-aware via `projectService`;
+  - `eslint-plugin-svelte` `recommended`;
+  - `consistent-type-imports`, `complexity: [error, 10]`, `max-lines: [error, {max: 500, skipBlankLines: true, skipComments: true}]`;
+  - `svelte/no-at-html-tags: error`;
+  - `linterOptions.reportUnusedDisableDirectives: "error"`;
+  - run with `--max-warnings 0`.
+- `svelte-check --fail-on-warnings`, `prettier --check .`, and `knip` (unused files, exports and dependencies) blocking.
+
+### Suppressions
+
+- Every `#[allow(...)]`, `// eslint-disable…` or `@ts-expect-error` carries a reason on the same line.
+- `tools/count-suppressions.sh` counts them against `ratchets/suppressions.txt`, which may only go down. It changes only in `chore/ratchet-*` PRs. Never raise it to make a build pass.
+
+### Files
+
+- No source file (`.rs`, `.ts`, `.svelte`) over 500 lines, excluding blanks and comments. `tools/file-size.sh`, blocking.
+
+### Tests
+
+- Test first, with the failing output saved as `docs/tdd/<task>-red.txt` before the code that makes it pass.
+- Warnings fail tests:
+  - Rust tests run under `-D warnings`;
+  - vitest's setup throws on any `console.error` or `console.warn`;
+  - no test may sleep on real time (tokio's paused clock and vitest fake timers only).
+- Tests that show times (`since`, "as of N min ago") run under `TZ=UTC`, `America/New_York` and `Asia/Tokyo` and must give the same answer.
+- Assert outcomes (the argv a runner received, the state produced, what renders), never that a mock was called.
+
+### Coverage
+
+(cargo-llvm-cov for Rust, vitest v8 for TypeScript)
+
+- **Global:** at least 90% lines and 90% branches for TypeScript; at least 90% lines and 90% regions for Rust. Rust branch coverage needs a nightly toolchain, so regions stand in for branches.
+- **Per file:** at least 70% lines.
+- **Security-critical files:** at least 95% lines and 90% regions or branches. These are `cli.rs`, `crewkit.rs`, `fix_prompt.rs`, `terminal.rs`, `herdr/bridge.rs`, the argv builders in `commands.rs`, and `PlanDialog.svelte`.
+- **Diff coverage:** at least 90% on changed lines.
+- Floors live in `ratchets/coverage.json` and may only rise. After any merge that measures higher, they rise to floor(measured) − 1.
+- A denominator check fails if a source file drops out of the report.
+
+### Mutation testing
+
+(none of the three repos runs a real mutation tool, so this sets the bar)
+
+- `cargo-mutants` for Rust and Stryker for TypeScript, run in CI on the files a PR changes and nightly in full.
+- Zero surviving mutants in the security-critical files above. A mutation score of at least 85% elsewhere, recorded in `ratchets/mutation.json`, which may only rise.
+
+### Security
+
+- gitleaks over the full history, blocking.
+- `npm audit --audit-level=low`, blocking.
+- `cargo deny` (above).
+- A licence allowlist for npm via `license-checker-rseidelsohn --onlyAllow` (same list as cargo deny).
+- CodeQL for Rust and JavaScript/TypeScript (free on public repos), blocking on any alert.
+- Every GitHub Action pinned to a commit SHA; `actionlint` and `zizmor` (GitHub Actions security lint) blocking.
+- No secrets in the repo, argv, logs, CI or GitHub text.
+
+### Hooks
+
+(lefthook, installed by `npm ci`)
+
+- pre-commit: rustfmt, clippy, eslint, prettier, svelte-check, `tsc --noEmit`, the file-size and suppression checks, on the staged side only.
+- pre-push: the Rust and TypeScript test suites with coverage and floors, then crewkit's `scrub.sh --require-denylist --all`, then `gitleaks`, chained so any failure blocks the push.
+- Never `--no-verify`.
+
+### CI
+
+- One aggregate required check, `ci-ok`, that needs every job above on `macos-latest`, `ubuntu-latest` and `windows-latest`. Draft PRs run nothing.
+- Conventional Commits checked by commitlint.
+- The perf budget runs on `macos-latest` (Task 12).
+
+### Review
+
+- Every task gets an independent adversarial review by a session that didn't write it, posted as a PR review that reads:
+
+  ```text
+  Adversarial review: independent (#N)
+  Reviewed head: <sha>
+  Verdict: MERGE
+  ```
+
+  or `Verdict: FIX — <findings>`.
+- The reviewer reports and doesn't fix. Any push after the reviewed head voids the verdict.
+- Merge only with `gh pr merge --squash --match-head-commit <reviewed sha>`.
+- Security-critical files get an Opus review.
+- Every auth, boundary or argv guard line a PR adds or changes is probed by the reviewer, who mutates the line and expects a test to fail.
+
+---
 
 ## Review Focus
 
@@ -63,7 +174,10 @@ ui/
   src/lib/Doctor.svelte, PlanDialog.svelte, OwnerCard.svelte, InstallView.svelte, JoinFlow.svelte, Prefs.svelte
   src/lib/*.test.ts
 tools/perf-budget.sh     measures RSS idle/open and cold start against the budget
-tools/hooks/pre-push     scrub + gitleaks chain
+lefthook.yml             pre-commit and pre-push gates (scrub + gitleaks last)
+tools/file-size.sh, tools/count-suppressions.sh
+ratchets/                coverage, mutation and suppression floors (only rise / only fall)
+deny.toml, clippy.toml, .github/workflows/codeql.yml, .github/dependabot.yml
 docs/json-contract.md    the Issue A shapes this release builds against
 docs/releasing.md        local signing and notarization steps
 .github/workflows/ci.yml
@@ -76,7 +190,7 @@ README.md, LICENSE (MIT)
 
 **Files:**
 
-- Create: everything under `src-tauri/` and `ui/` needed for an empty window and a tray icon; `.github/workflows/ci.yml`; `tools/hooks/pre-push`; `README.md`; `docs/json-contract.md` (a copy of Issue A's three shapes and rules from the spec appendix)
+- Create: everything under `src-tauri/` and `ui/` needed for an empty window and a tray icon; `.github/workflows/ci.yml`; the Quality Bar files (Step 4); `README.md`; `docs/json-contract.md` (a copy of Issue A's three shapes and rules from the spec appendix)
 - Test: `src-tauri/src/main.rs` (unit test module), `ui/src/App.test.ts`
 
 **Interfaces:**
@@ -86,8 +200,12 @@ README.md, LICENSE (MIT)
 - [ ] **Step 1: Write the failing tests:** `app_identifier_is_stable` (`tauri.conf.json` identifier == `"dev.explodedviews.crewkit"`), and in vitest `renders the empty crew map placeholder` (App shows "No crew yet").
 - [ ] **Step 2: Run them:** `cd src-tauri && cargo test` and `npm test`. Expected: FAIL (nothing scaffolded).
 - [ ] **Step 3: Scaffold** with `npm create tauri-app` (Svelte + TypeScript template), then trim it to the file structure above. The window is hidden at launch and the tray icon shows. Closing the window destroys the webview and keeps the tray (`WindowEvent::CloseRequested` → `window.destroy()`, app keeps running).
-- [ ] **Step 4: CI:** `ci.yml` runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `npm ci`, `npm test` and `npm run tauri build -- --no-bundle` on macos-14, ubuntu-24.04 and windows-2022. Use no secrets and no signing.
-- [ ] **Step 5: Push gate:** `tools/hooks/pre-push` runs `"$CREWKIT_DEV/tools/scrub.sh" --require-denylist --all && gitleaks detect --redact --no-banner`. It fails if `CREWKIT_DEV` is unset. The README tells contributors to run `git config core.hooksPath tools/hooks`.
+- [ ] **Step 4: CI and the quality bar:**
+  - `ci.yml` implements every gate in "Quality Bar" as its own job, plus `npm run tauri build -- --no-bundle`, on `macos-latest`, `ubuntu-latest` and `windows-latest`, all feeding `ci-ok`.
+  - Add `codeql.yml`, `dependabot.yml` (with the 2-day cooldown), `deny.toml`, `clippy.toml`, `lefthook.yml`, `ratchets/` (coverage, mutation and suppression floors), `tools/file-size.sh` and `tools/count-suppressions.sh`.
+  - Use no secrets and no signing.
+  - Prove each gate bites: one throwaway commit per gate on a probe branch (an `unwrap()`, an `any`, a 501-line file, an untested branch, a surviving mutant, a GPL dependency, an unpinned action, a planted test token) must turn `ci-ok` red. List the probe runs in the PR body, then delete the branch.
+- [ ] **Step 5: Push gate:** lefthook's pre-push (see "Quality Bar"); its last two commands are `"$CREWKIT_DEV/tools/scrub.sh" --require-denylist --all && gitleaks detect --redact --no-banner`. It fails if `CREWKIT_DEV` is unset. The README documents the hooks and the `CREWKIT_DEV` variable.
 - [ ] **Step 6: Run the tests.** Expected: PASS locally; CI green on all three runners.
 - [ ] **Step 7: Commit** `feat: scaffold tauri app, ci and push gate`.
 
@@ -460,7 +578,7 @@ README.md, LICENSE (MIT)
 
 - [ ] **Step 1: Write the failing check:** run `tools/perf-budget.sh` against the Task 11 build. Expected: it runs and prints numbers; the build fails on any number over budget.
 - [ ] **Step 2: Fix any budget misses.** Typical causes: the webview kept alive when closed, polling instead of events, or a heavy UI dependency.
-- [ ] **Step 3: Add `perf-budget.sh` to CI on macos-14** (unsigned build, fixtures mode) so a regression fails CI.
+- [ ] **Step 3: Add `perf-budget.sh` to CI on `macos-latest`** (unsigned build, fixtures mode) so a regression fails CI.
 - [ ] **Step 4: Run** `tools/perf-budget.sh`. Expected: three numbers, all under budget, exit 0.
 - [ ] **Step 5: Owner release (manual, on the owner's Mac):** follow `docs/releasing.md`, then `spctl -a -vv crewkit.app`. Expected: `accepted, source=Notarized Developer ID`.
 - [ ] **Step 6: Commit** `chore: lightness budget, packaging and release docs`.
