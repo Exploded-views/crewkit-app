@@ -59,13 +59,16 @@ Every gate is blocking, locally and in CI. `ci-ok` is the one required check; it
   `America/New_York` and `Asia/Tokyo`.
 - Coverage and mutation floors in `ratchets/`, checked by `tools/coverage-gate.ts` and
   `tools/mutation-gate.ts`. Floors only rise and the suppression count only falls;
-  `tools/ratchet-guard.ts` lets `ratchets/` change only in `chore/ratchet-*` PRs.
+  `tools/ratchet-guard.ts` lets `ratchets/` change only in `chore/ratchet-*` PRs (on a push to
+  `main` it checks only the direction). The gate scripts have their own tests:
+  `npm run test:tools`.
 - No source file over 500 lines of code (`tools/file-size.sh`). Every lint suppression carries its
   reason on the same line (`tools/count-suppressions.sh`).
 - Dependencies: the newest stable release that is at least 2 days old, everywhere. The only
   exceptions are in `docs/dependency-exceptions.md`; `tools/deps-check.ts` checks them both ways.
-- Security: gitleaks over the full history, npm audit, the licence allowlist, CodeQL, and every
-  GitHub Action pinned by commit SHA (actionlint and zizmor).
+- Security: gitleaks over the full history, npm audit, the licence allowlist, CodeQL (a job in
+  `ci.yml`, so `ci-ok` needs it), and every GitHub Action pinned by commit SHA (actionlint and
+  zizmor).
 
 ## Docs
 

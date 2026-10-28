@@ -1,3 +1,3 @@
-# cargo-mutants settings. main.rs is the Tauri entry point and event-loop glue, listed in
-# ratchets/mutation.json under not_mutated; keep logic out of it.
+# cargo-mutants settings. main.rs is Tauri wiring only, listed in ratchets/mutation.json under
+# not_mutated; its decisions live in src/lifecycle.rs, which is mutated. Keep logic out of main.rs.
 exclude_globs = ["src/main.rs"]

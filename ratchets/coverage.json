@@ -17,6 +17,6 @@
     ]
   },
   "not_measured": {
-    "src-tauri/src/main.rs": "Tauri entry point and event-loop glue (tray, window lifecycle, run loop); Tauri's mock runtime only drives these from a loop that sleeps on real time. Keep logic out of it."
+    "src-tauri/src/main.rs": "Tauri wiring only (Builder, tray and window construction, run loop), which Tauri's mock runtime cannot drive without real-time sleeps. Every decision it makes is in src-tauri/src/lifecycle.rs, which is measured and tested. Keep logic out of it."
   }
 }

@@ -1,24 +1,22 @@
 //! crewkit: a menu-bar front end for crewkit and its crews.
 //!
-//! This file is the Tauri entry point and event-loop glue only: the tray, the
-//! main window's lifecycle and the run loop. Logic that can be tested lives in
-//! its own module.
+//! This file is the Tauri entry point and event-loop glue only: it wires the tray, the main
+//! window's lifecycle and the run loop to the decisions in `lifecycle`, which are tested there.
+//! Keep logic out of it: it is not measured by coverage or mutation (see `ratchets/`).
 
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod lifecycle;
+
+use lifecycle::{
+    CloseAction, MENU_OPEN, MENU_QUIT, MenuAction, QUIT_EXIT_CODE, TRAY_ID, WINDOW_LABEL,
+};
 use tauri::menu::{Menu, MenuEvent, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{
     App, AppHandle, Manager as _, RunEvent, Runtime, WebviewWindowBuilder, Window, WindowEvent,
 };
-
-/// The id of the menu-bar (tray) icon.
-const TRAY_ID: &str = "main";
-/// The label of the main window, as declared in `tauri.conf.json`.
-const WINDOW_LABEL: &str = "main";
-const MENU_OPEN: &str = "open";
-const MENU_QUIT: &str = "quit";
 
 fn main() -> tauri::Result<()> {
     let app = tauri::Builder::default()
@@ -26,11 +24,8 @@ fn main() -> tauri::Result<()> {
         .on_window_event(on_window_event)
         .build(tauri::generate_context!())?;
     app.run(|_app, event| {
-        // Closing the last window must not quit: the tray keeps running.
-        // Quit from the tray menu exits with a code and is let through.
-        if let RunEvent::ExitRequested {
-            code: None, api, ..
-        } = event
+        if let RunEvent::ExitRequested { code, api, .. } = event
+            && lifecycle::should_prevent_exit(code)
         {
             api.prevent_exit();
         }
@@ -61,28 +56,28 @@ fn setup<R: Runtime>(app: &mut App<R>) -> tauri::Result<()> {
 }
 
 fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: &MenuEvent) {
-    match event.id().as_ref() {
-        MENU_OPEN => open_main_window(app),
-        MENU_QUIT => app.exit(0),
-        _ => {}
+    match lifecycle::menu_action(event.id().as_ref()) {
+        Some(MenuAction::OpenWindow) => open_main_window(app),
+        Some(MenuAction::Quit) => app.exit(QUIT_EXIT_CODE),
+        None => {}
     }
 }
 
 fn on_tray_icon_event<R: Runtime>(tray: &TrayIcon<R>, event: &TrayIconEvent) {
     if let TrayIconEvent::Click {
-        button: MouseButton::Left,
-        button_state: MouseButtonState::Up,
+        button,
+        button_state,
         ..
     } = *event
+        && lifecycle::tray_click_opens(button, button_state)
     {
         open_main_window(tray.app_handle());
     }
 }
 
-/// Closing the main window destroys its webview; the tray stays.
 fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event
-        && window.label() == WINDOW_LABEL
+        && lifecycle::close_action(window.label()) == CloseAction::Destroy
     {
         api.prevent_close();
         // A failed destroy leaves the window open, which the person can close again.

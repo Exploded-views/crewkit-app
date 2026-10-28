@@ -15,6 +15,7 @@
     "tauri": "tauri",
     "test": "vitest run --config ui/vite.config.ts",
     "test:coverage": "vitest run --config ui/vite.config.ts --coverage",
+    "test:tools": "node --test tools/*.test.ts",
     "lint": "eslint --max-warnings 0 .",
     "format:check": "prettier --check .",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc --noEmit -p tsconfig.json",

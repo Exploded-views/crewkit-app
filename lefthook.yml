@@ -46,6 +46,8 @@ pre-push:
       run: >-
         ${CREW_HEAVY_LOCK:+flock "$CREW_HEAVY_LOCK"} npm run test:coverage
         && node tools/coverage-gate.ts typescript
+    - name: tools-tests
+      run: npm run test:tools
     - name: crewkit-dev-is-set
       run: >-
         test -n "${CREWKIT_DEV:-}" && test -x "$CREWKIT_DEV/tools/scrub.sh"

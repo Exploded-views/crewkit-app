@@ -1,8 +1,11 @@
-// Ratchet guard (pull requests): ratchets/ changes only in chore/ratchet-* PRs, and only one way.
+// Ratchet guard: ratchets/ changes only in chore/ratchet-* PRs, and only one way.
 //   coverage.json, mutation.json: numbers only rise, listed files stay listed, not_* exclusions
 //   only shrink. suppressions.txt: only goes down.
 //
-//   node tools/ratchet-guard.ts <base-ref> <head-branch>
+//   node tools/ratchet-guard.ts <base-ref> <head-branch>   a pull request: branch name and direction
+//   node tools/ratchet-guard.ts <base-ref> --push          a push to main: direction only, because a
+//                                                           squash-merged chore/ratchet-* PR lands
+//                                                           on main under main's name
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -52,12 +55,15 @@ function loosened(before: unknown, now: unknown, path: string): string[] {
   );
 }
 
+/** The guard's mode: a pull request from a named branch, or a push (`--push`), direction only. */
+const PUSH = "--push";
+
 function checkFile(path: string, base: string, branch: string): string[] {
   const before = atBase(base, path);
   const now = readFileSync(path, "utf8");
   if (before === undefined || before === now) return [];
   const failures: string[] = [];
-  if (!branch.startsWith("chore/ratchet-"))
+  if (branch !== PUSH && !branch.startsWith("chore/ratchet-"))
     failures.push(`${path} changed outside a chore/ratchet-* branch (${branch})`);
   if (!path.endsWith(".txt")) {
     const problems = loosened(JSON.parse(before), JSON.parse(now), "");
@@ -70,7 +76,7 @@ function checkFile(path: string, base: string, branch: string): string[] {
 
 function main(base: string | undefined, branch: string | undefined): number {
   if (base === undefined || branch === undefined) {
-    process.stderr.write("usage: node tools/ratchet-guard.ts <base-ref> <head-branch>\n");
+    process.stderr.write("usage: node tools/ratchet-guard.ts <base-ref> <head-branch|--push>\n");
     return 64;
   }
   const failures = FILES.flatMap((path) => checkFile(path, base, branch));

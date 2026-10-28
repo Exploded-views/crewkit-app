@@ -1,0 +1,41 @@
+$ node --test tools/ratchet-guard.test.ts   # against the guard at 459c59c
+✖ a squash-merged chore/ratchet-* PR that raises a floor passes on the push to main (362.641125ms)
+✔ a push to main that lowers a floor fails (529.407625ms)
+✔ a push to main that adds an exclusion fails (681.356375ms)
+✔ a push to main that raises the suppression count fails (804.281792ms)
+✔ a pull request from another branch may not change the ratchets (471.095ms)
+✔ a pull request from a chore/ratchet-* branch may raise a floor (421.822875ms)
+✔ a chore/ratchet-* pull request still may not lower a floor (549.308167ms)
+✔ unchanged ratchets pass in either mode (657.720875ms)
+✔ a missing argument is a usage error (296.766875ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 8
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4938.62525
+
+✖ failing tests:
+
+test at tools/ratchet-guard.test.ts:52:6
+✖ a squash-merged chore/ratchet-* PR that raises a floor passes on the push to main (362.641125ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'ratchet-guard: ratchets/coverage.json changed outside a chore/ratchet-* branch (--push)\n'
+  - ''
+  
+      at TestContext.<anonymous> (file://<repo>/tools/ratchet-guard.test.ts:57:10)
+      at Test.runInAsyncScope (node:async_hooks:226:14)
+      at Test.run (node:internal/test_runner/test:1402:25)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'ratchet-guard: ratchets/coverage.json changed outside a chore/ratchet-* branch (--push)\n',
+    expected: '',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+exit: 1

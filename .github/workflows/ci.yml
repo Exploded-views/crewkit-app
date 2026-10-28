@@ -260,10 +260,30 @@ jobs:
           node-version-file: .node-version
       - name: Ratchets change only in chore/ratchet-* PRs, and only one way
         env:
-          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
-          if [[ -z "$BASE_SHA" ]]; then echo "no base to compare against"; exit 0; fi
-          node tools/ratchet-guard.ts "$BASE_SHA" "$HEAD_BRANCH"
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then echo "no base to compare against"; exit 0; fi
+          # A squash-merged chore/ratchet-* PR lands on main under main's name: on a push the
+          # branch rule was already checked on the PR, so only the direction is checked here.
+          if [[ "$EVENT" == pull_request ]]; then
+            node tools/ratchet-guard.ts "$BASE_SHA" "$HEAD_BRANCH"
+          else
+            node tools/ratchet-guard.ts "$BASE_SHA" --push
+          fi
+
+  tools-tests:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Tests for the gate scripts in tools/
+        run: npm run test:tools
 
   gitleaks:
     if: github.event.pull_request.draft != true
@@ -385,6 +405,39 @@ jobs:
       - name: Unsigned build, no bundle
         run: npm run tauri build -- --no-bundle
 
+  codeql:
+    if: github.event.pull_request.draft != true
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, javascript-typescript, actions]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          output: ${{ runner.temp }}/codeql
+      - name: Fail on any alert
+        run: |
+          count=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif | awk '{n += $1} END {print n + 0}')
+          echo "CodeQL results: $count"
+          if ((count > 0)); then
+            jq -r '.runs[].results[] | "\(.ruleId): \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)"' \
+              "$RUNNER_TEMP"/codeql/*.sarif
+            exit 1
+          fi
+
   ci-ok:
     if: always() && github.event.pull_request.draft != true
     needs:
@@ -401,6 +454,7 @@ jobs:
       - file-size
       - suppressions
       - ratchets
+      - tools-tests
       - gitleaks
       - npm-audit
       - licenses
@@ -408,6 +462,7 @@ jobs:
       - workflows
       - commitlint
       - build
+      - codeql
     runs-on: ubuntu-latest
     steps:
       - name: Every job succeeded

@@ -11,6 +11,6 @@
     "ui/src/lib/PlanDialog.svelte"
   ],
   "not_mutated": {
-    "src-tauri/src/main.rs": "Tauri entry point and event-loop glue; see ratchets/coverage.json not_measured."
+    "src-tauri/src/main.rs": "Tauri wiring only; its decisions are in src-tauri/src/lifecycle.rs, which is mutated. See ratchets/coverage.json not_measured."
   }
 }

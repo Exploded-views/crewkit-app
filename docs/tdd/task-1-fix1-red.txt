@@ -1,0 +1,22 @@
+$ cd src-tauri && cargo test lifecycle
+error[E0432]: unresolved imports `super::CloseAction`, `super::MENU_OPEN`, `super::MENU_QUIT`, `super::MenuAction`, `super::QUIT_EXIT_CODE`, `super::WINDOW_LABEL`, `super::close_action`, `super::menu_action`, `super::should_prevent_exit`, `super::tray_click_opens`
+ --> src/lifecycle.rs:7:9
+  |
+7 |         CloseAction, MENU_OPEN, MENU_QUIT, MenuAction, QUIT_EXIT_CODE, WINDOW_LABEL, close_action,
+  |         ^^^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^ no `close_action` in `lifecycle`
+  |         |            |          |          |           |               |
+  |         |            |          |          |           |               no `WINDOW_LABEL` in `lifecycle`
+  |         |            |          |          |           no `QUIT_EXIT_CODE` in `lifecycle`
+  |         |            |          |          no `MenuAction` in `lifecycle`
+  |         |            |          no `MENU_QUIT` in `lifecycle`
+  |         |            no `MENU_OPEN` in `lifecycle`
+  |         no `CloseAction` in `lifecycle`
+8 |         menu_action, should_prevent_exit, tray_click_opens,
+  |         ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^ no `tray_click_opens` in `lifecycle`
+  |         |            |
+  |         |            no `should_prevent_exit` in `lifecycle`
+  |         no `menu_action` in `lifecycle`
+
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `crewkit` (bin "crewkit" test) due to 1 previous error
+exit: 101
