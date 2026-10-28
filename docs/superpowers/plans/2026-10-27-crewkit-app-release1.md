@@ -228,7 +228,8 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `src-tauri/tauri.conf.json` (`main` and `settings` windows) and `src-tauri/capabilities/default.json` (`windows: ["main", "settings"]`);
   - `src-tauri/Cargo.toml` (description, keywords, the `unstable` feature; keep `tray-icon` for Task 7) and `package.json` (description);
   - `README.md`, `ratchets/coverage.json` (the `main.rs` reason), `.github/actions/setup/action.yml` (the Linux libraries description) and `deny.toml` (the RUSTSEC reason);
-  - `docs/dependency-exceptions.md` (a row for Tauri's `unstable` feature) and `ui/src/App.svelte` (render the Settings placeholder in the `settings` window).
+  - `docs/dependency-exceptions.md` (a row for Tauri's `unstable` feature) and `ui/src/App.svelte` (render the Settings placeholder in the `settings` window);
+  - `src-tauri/Cargo.toml` and `capabilities/default.json` also gain `tauri-plugin-dialog` (the quit question, Task 7).
 - Test: tests modules in `lifecycle.rs`, `menu.rs` and `keeper.rs`; `ui/src/App.test.ts`; CI runs `tools/no-menubar-wording.sh`.
 
 **Interfaces:**
@@ -239,15 +240,22 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     - The main window: label `main`, title `crewkit`, 1100×720 by default, minimum 800×520.
     - The Settings window: label `settings`, title `Settings`, 560×440, not resizable, created on demand. Cmd-, opens it, or focuses it if it's already open: never a second one. Closing it destroys it. It renders a "Settings" placeholder until Task 11 fills it.
   - **The default (Regular) activation policy:** a Dock icon and Cmd-Tab. No `set_activation_policy` call and no `LSUIElement`.
-  - **The keeper window** (`keeper.rs`): one hidden window with no webview, label `keeper`. It's built with Tauri's `unstable` `WindowBuilder` at launch and never shown. It does two jobs on macOS:
+  - **The keeper window** (`keeper.rs`): one hidden window with no webview, label `keeper`. It's built at launch with Tauri's `unstable` `WindowBuilder` and `.visible(false)`, `.focused(false)` and `.skip_taskbar(true)`, and is never shown.
+    - It's on `tauri-plugin-window-state`'s denylist.
+    - It's the one window built in code rather than from config; `docs/decisions.md` records that exception and why.
+    - It does two jobs on macOS:
     - it keeps the app alive when `main` closes, so the app needs no `prevent_exit` and Cmd-Q, Dock › Quit and log-out quit normally;
     - it's the handle the Dock badge goes through (`Badge`, below).
     - The `unstable` feature is recorded in `docs/dependency-exceptions.md`, with its reason and the Tauri issue to watch.
+    - Badge and attention calls through it reach NSApp app-wide (verified against the tauri 2.12.5, tao and wry sources).
   - **Lifecycle** (`lifecycle.rs`, pure and unit-tested; `main.rs` stays glue and tests never call `app.run()`):
     - `fn close_action(label) -> CloseAction`: `main` and `settings` are destroyed on close.
     - `fn on_reopen(windows: &[&str]) -> ReopenAction`: `main` present → `ShowAndFocus`, else `CreateMain`. It looks for the `main` label specifically, never "any window" (the keeper always exists).
-    - `fn should_prevent_exit(os, code) -> bool`: `false` everywhere when the keeper exists. On Windows and Linux, closing the last window quits (no keeper there).
-    - `fn quit_request(write_lock_held: bool) -> QuitAction`: `Exit` when no action is running, `AskFirst` when one is. Task 7 wires `AskFirst` to its sheet; until then the lock is never held.
+    - `fn should_prevent_exit(os, keeper: bool, code) -> bool`: `false` when the keeper exists. In the macOS fallback with no keeper, it's `true` for `code == None`, i.e. any last-window close, `main` or `settings`. On Windows and Linux, closing the last window quits (no keeper there).
+    - `fn quit_request(write_lock_held: bool) -> QuitAction`: `Exit` when no action is running, `AskFirst` when one is. Task 7 wires `AskFirst` to its question; until then the lock is never held.
+    - **Every quit item routes through `quit_request`:** the app menu's Quit, and the status item's Quit (Task 7).
+    - Dock › Quit and log-out can't be intercepted, because tao has no `applicationShouldTerminate`. They reach `RunEvent::Exit` directly, and Task 7's `shutdown()` stops a running action gracefully there.
+  - **Coverage:** `menu_spec`, `menu_action`, the lifecycle functions and the `Badge` logic are pure and covered. `build_menu` and the keeper's `WindowBuilder` call need a real main thread, so they live in `main.rs`, the coverage-exempt glue file (its `ratchets/coverage.json` reason says so). They hold no logic.
   - **The app menu.** `menu.rs` exposes `pub fn menu_spec() -> Vec<MenuSpec>`, pure data (ids, labels, accelerators, predefined kinds) that tests check. `pub fn build_menu<R: Runtime>(app, &[MenuSpec]) -> tauri::Result<Menu<R>>` turns it into muda menus on the main thread and isn't unit-tested.
     - crewkit: About crewkit; Settings… `CmdOrCtrl+,`; Hide crewkit `CmdOrCtrl+H`; Hide Others `Alt+CmdOrCtrl+H`; Show All; Quit crewkit `CmdOrCtrl+Q`. Quit is a custom item, id `quit`, that goes through `quit_request` and then `app.exit(0)`.
     - Edit: Undo, Redo, Cut, Copy, Paste, Select All (predefined).
@@ -255,22 +263,25 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     - Window: Close Window `CmdOrCtrl+W`; Minimize `CmdOrCtrl+M`; Zoom; Bring All to Front.
     - Help: crewkit Help, which opens the repo's README in the browser.
   - **Menu events are handled in Rust only.** `menu.rs` has `fn menu_action(id) -> Option<MenuAction>` (`Settings`, `Refresh`, `RunDoctor`, `Quit`, `Help`). Refresh and RunDoctor are no-ops until Task 7.
-  - **The Badge seam:** `trait Badge { fn set(&self, count: Option<i64>) -> tauri::Result<()>; }`. `KeeperBadge` implements it with the keeper's `set_badge_count`, and tests use a recording fake.
+  - **The Badge seam:** `trait Badge { fn show(&self, needs_you: u32) -> tauri::Result<()>; }`. The one place that maps 0 to `None` is `fn badge_count(needs_you: u32) -> Option<i64>` in `keeper.rs`. `KeeperBadge` implements `Badge` with the keeper's `set_badge_count(badge_count(n))`, and tests use a recording fake.
+  - **The Attention seam:** `trait Attention { fn bounce(&self) -> tauri::Result<()>; }`. `KeeperAttention` calls `request_user_attention(Informational)`, and tests use a recording fake.
 - **Never a stale count:** if `docs/decisions.md` records that the keeper can't badge, the badge is cleared whenever `main` closes and set again on reopen.
 
 - [ ] **Step 1: Write the failing tests:**
   - `windows_come_from_config`: `tauri.conf.json` has `main` (`visible: false`, `create: false`, 1100×720, min 800×520) and `settings` (560×440, `resizable: false`, `create: false`). Both labels are in `capabilities/default.json` `windows`. This replaces Task 1's `visible == false`-only assertion.
   - `closing main or settings destroys it`; `reopen with main present shows and focuses it`; `reopen without main creates it, even when keeper exists`.
-  - `the keeper keeps the app alive, so no exit is prevented on macOS`; `closing the last window quits on Windows and Linux`.
+  - `the keeper keeps the app alive, so no exit is prevented on macOS`; `in the fallback, closing settings or main last is prevented on macOS`; `closing the last window quits on Windows and Linux`.
+  - `the keeper exists and is not visible` (mock app: `get_window("keeper")` is `Some` and `!is_visible()`) and `keeper is on the window-state denylist`.
   - `quit with no action running exits` and `quit while an action runs asks first`.
   - `menu_spec has every item with its exact accelerator` and `every custom menu id maps to an action`. Each accelerator is asserted as a string, so a mutant that changes one fails.
   - `settings opens once and then focuses`: on a mock app, two Settings actions leave one `settings` window.
-  - `badge seam`: `KeeperBadge`'s logic, driven through the fake, sends `None` for 0 and `Some(n)` otherwise.
+  - `badge_count maps 0 to None and n to Some(n)`, and `the fallback clears the badge when main closes` (Badge fake records `show(0)` on close).
   - vitest: `the settings window renders the Settings placeholder`.
   - `tools/no-menubar-wording.sh` fails on `menu.?bar|tray|Accessory|LSUIElement` (case-insensitive) in tracked files other than `src-tauri/src/status_item.rs`, `docs/superpowers/`, `docs/decisions.md` and the lockfiles.
+    - The pattern is `menu.?bar|\btray\b|Accessory|LSUIElement`, so `tray-icon` doesn't match. The `tray-icon` feature line in `Cargo.toml` is allowlisted explicitly as well.
     - It is RED against Task 1's scaffold.
     - It's a CI job feeding `ci-ok`.
-    - Task 7 adds the `tray-icon` feature line in `Cargo.toml` to its allowlist.
+    - Task 7's README text about the status item must avoid "menu bar", or that line is added to the allowlist in Task 7.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
   - Remove the accessory policy, the tray glue and the menu-bar wording.
@@ -358,7 +369,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `status waits for a running apply`;
   - `argv never goes through a shell` (an argument `"; rm -rf ~"` reaches the stub verbatim as one argv element).
 - [ ] **Step 2: Run them:** `cargo test cli:: crewkit::`. Expected: FAIL.
-- [ ] **Step 3: Implement** `cli.rs` and `crewkit.rs` to the interfaces above, using `tokio::process::Command` with `env_clear()` and then the four allowed variables.
+- [ ] **Step 3: Implement** `cli.rs` and `crewkit.rs` to the interfaces above, using `tokio::process::Command` with `env_clear()` and then the four allowed variables. Every command is built by one `pub fn command(argv: &[String]) -> tokio::process::Command` (ledger R1), which also sets `process_group(0)` (unix) and `kill_on_drop(true)`, so Task 7's shutdown can signal whole process groups.
 - [ ] **Step 4: Run them.** Expected: PASS.
 - [ ] **Step 5: Commit** `feat: serialized cli runner and crewkit client`.
 
@@ -463,7 +474,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 **Files:**
 
 - Create: `src-tauri/src/scheduler.rs`, `src-tauri/src/commands.rs`, `src-tauri/src/status_item.rs`
-- Modify: `src-tauri/src/main.rs`, `src-tauri/Cargo.toml` (the `tray-icon` feature returns, for the status item only)
+- Modify: `src-tauri/src/main.rs` (the `tray-icon` feature stays from Task 1, now used only by the status item)
 - Test: tests modules in `scheduler.rs` (paused tokio clock) and `status_item.rs`
 
 **Interfaces:**
@@ -481,11 +492,15 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     - reads: `get_map`, `get_doctor`, `get_pieces`, `get_prefs`, `set_prefs`;
     - actions: `plan_action(argv)`, `apply_action(argv)`, `open_lead(node)`, `fix_with_agent(check_id, node)`.
   - Menu actions (handled in Rust): Refresh runs `status` now, and Run Doctor runs `doctor` now.
-  - **Quit while an action runs:** `quit_request(true)` shows a sheet in the main window: "An action is running (<verb>). Quit anyway? crewkit will stop it." It has two buttons:
+  - **Quit while an action runs** (the app menu's Quit or the status item's): `quit_request(true)` asks with a native dialog (`tauri-plugin-dialog`, which needs no main window): "An action is running (<verb>). Quit anyway? crewkit will stop it."
     - **Cancel** keeps the app running.
-    - **Quit anyway** sends SIGTERM to the running crewkit and waits up to 10 s for its `crewkit.result/v1` (crewkit writes one on TERM). It then logs the outcome and exits.
-  - **On exit** (`RunEvent::Exit`), `Scheduler::shutdown()` ends every child the app started (local herdr subscription, bridges, any CLI) and waits up to 2 s for each. All of them are spawned with `kill_on_drop(true)`.
-  - **Alerts:** each `Alert` from `CrewState::tick` while the app isn't focused bounces the Dock icon once (`request_user_attention(Informational)` through the keeper). There are no system notifications in release 1.
+    - **Quit anyway** calls `stop_action()`, then exits.
+  - **`fn stop_action() -> Option<ApplyOutcome>`:** sends SIGTERM to the running crewkit's process group and waits up to 10 s for its `crewkit.result/v1` (crewkit writes one on TERM). It then logs the outcome. A missing result logs `Unknown`.
+  - **On exit** (`RunEvent::Exit`; it's the only path for Dock › Quit and log-out), `Scheduler::shutdown()` blocks inside the handler:
+    1. it calls `stop_action()` first if an action is running, so the action gets the same graceful stop without being asked;
+    2. it then ends every other child the app started (the local herdr subscription, bridges, any read-only CLI), with one 2 s budget across all of them: SIGTERM to each process group, then SIGKILL to any still alive at the deadline.
+    - Every child is spawned in its own process group (`process_group(0)` through `cli::command`) with `kill_on_drop(true)`, so signals reach grandchildren too.
+  - **Alerts:** each `Alert` from `CrewState::tick` while the app isn't focused calls `Attention::bounce()` once. There are no system notifications in release 1.
   - **Dock badge:** `fn badge_for(needs_you: u32) -> Option<i64>`, `None` at 0, is applied through Task 1b's `Badge` whenever `needs_you` changes. It is never stale: if `docs/decisions.md` records the fallback, the badge is cleared on close.
   - **Optional status item** (`status_item.rs`), shown only when `prefs.status_item` (default off):
     - `fn apply_status_item(app, on: bool)` creates or removes it with id `status`;
@@ -493,7 +508,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     - a click opens the main window; the menu is "Open crewkit" and "Quit";
     - it has no webview of its own;
     - Settings toggles it, and it applies immediately.
-    - Add the `tray-icon` line in `Cargo.toml` to `tools/no-menubar-wording.sh`'s allowlist.
+    - its Quit goes through `quit_request`, the same as the app menu's.
   - Launch at login uses `tauri-plugin-autostart`, enabled only when `prefs.launch_at_login`.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -505,9 +520,11 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `badge is None at zero and the count otherwise`;
   - `status item exists only while prefs.status_item is on` (mock app: on → `tray_by_id("status")` is `Some`; off → `None`);
   - `needs_you changes reach the Badge fake` (0 → `None`, 3 → `Some(3)`);
-  - `quit while an apply runs asks first; Quit anyway terminates the child and exits`;
-  - `no child process survives quit`: start the scheduler with a runner that spawns `sleep 600` and a fake bridge child, call `shutdown()`, and assert both pids are gone (`kill(pid, 0)` fails);
-  - `an alert while unfocused requests attention once`.
+  - `quit while an apply runs asks first, with main closed too` (dialog fake: no main window needed); `Quit anyway stops the action and exits`;
+  - `the status item's Quit goes through quit_request`;
+  - `shutdown during an apply stops it gracefully and logs the outcome` (the Dock › Quit path: the fake crewkit writes a result on TERM, and the outcome is logged);
+  - `no process survives quit`: the runner spawns `sh -c 'sleep 600 & wait'`, plus a fake bridge child. After `shutdown()`, both direct pids and the grandchild `sleep` pid are gone (`kill(pid, 0)` fails), and `shutdown()` returned within 2.5 s;
+  - `an alert while unfocused bounces once` (Attention fake).
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement** the scheduler, commands, badge and status item, and wire them up in `main.rs`.
 - [ ] **Step 4: Run the tests,** then `npm run tauri dev` with fixtures (`CREWKIT_APP_FIXTURES=src-tauri/tests/fixtures` makes `RealRunner` answer `status` and `doctor` from files; behind the `fixtures` cargo feature, never in a release bundle). Expected:
