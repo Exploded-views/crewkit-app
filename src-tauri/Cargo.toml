@@ -1,0 +1,48 @@
+[package]
+name = "crewkit"
+version = "0.1.0"
+description = "A light macOS menu-bar front end for crewkit and its crews"
+license = "MIT"
+repository = "https://github.com/Exploded-views/crewkit-app"
+readme = "../README.md"
+keywords = ["crewkit", "tauri", "menu-bar"]
+categories = ["gui"]
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.5", features = ["tray-icon"] }
+
+[dev-dependencies]
+serde_json = "1.0.154"
+
+[lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+missing_debug_implementations = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+cognitive_complexity = "deny"
+multiple_crate_versions = "allow" # duplicates are owned by cargo deny (deny.toml [bans]), each listed with what pins it
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

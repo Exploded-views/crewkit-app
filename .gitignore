@@ -1,0 +1,10 @@
+.superpowers/
+node_modules/
+target/
+dist/
+coverage/
+reports/
+mutants.out/
+mutants.out.old/
+.stryker-tmp/
+src-tauri/gen/

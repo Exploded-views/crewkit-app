@@ -1,0 +1,12 @@
+package-lock.json
+src-tauri/target/
+src-tauri/gen/
+dist/
+coverage/
+reports/
+mutants.out/
+mutants.out.old/
+.stryker-tmp/
+docs/tdd/
+docs/superpowers/
+.markdownlint-cli2.yaml

@@ -1,0 +1,54 @@
+# Git hooks, installed by `npm ci` (the `prepare` script runs `lefthook install`). Never --no-verify.
+# Heavy steps take the lock in $CREW_HEAVY_LOCK when it is set (flock), so they queue behind
+# other heavy jobs on a shared machine.
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      run: rustfmt --check --edition 2024 {staged_files}
+    - name: clippy
+      glob: "src-tauri/**/*.{rs,toml}"
+      run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+    - name: eslint
+      glob: "*.{ts,js,svelte}"
+      run: npx eslint --max-warnings 0 {staged_files}
+    - name: prettier
+      run: npx prettier --check --ignore-unknown {staged_files}
+    - name: svelte-check
+      glob: "*.{ts,svelte}"
+      run: npx svelte-check --tsconfig ./tsconfig.json --fail-on-warnings
+    - name: tsc
+      glob: "*.{ts,svelte}"
+      run: npx tsc --noEmit -p tsconfig.json
+    - name: file-size
+      glob: "*.{rs,ts,svelte}"
+      run: tools/file-size.sh {staged_files}
+    - name: suppressions
+      run: tools/count-suppressions.sh
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: npx commitlint --edit {1}
+
+pre-push:
+  piped: true
+  jobs:
+    - name: rust-tests-coverage
+      run: >-
+        mkdir -p coverage && ${CREW_HEAVY_LOCK:+flock "$CREW_HEAVY_LOCK"} cargo llvm-cov --manifest-path src-tauri/Cargo.toml
+        --json --summary-only --output-path coverage/rust-summary.json
+        --ignore-filename-regex 'src[/\\]main\.rs$'
+        && node tools/coverage-gate.ts rust
+    - name: ts-tests-coverage
+      run: >-
+        ${CREW_HEAVY_LOCK:+flock "$CREW_HEAVY_LOCK"} npm run test:coverage
+        && node tools/coverage-gate.ts typescript
+    - name: crewkit-dev-is-set
+      run: >-
+        test -n "${CREWKIT_DEV:-}" && test -x "$CREWKIT_DEV/tools/scrub.sh"
+        || { echo "pre-push: set CREWKIT_DEV to your crewkit-dev checkout (it holds tools/scrub.sh)" >&2; exit 1; }
+    - name: scrub-and-gitleaks
+      run: '"$CREWKIT_DEV/tools/scrub.sh" --require-denylist --all && gitleaks detect --redact --no-banner'

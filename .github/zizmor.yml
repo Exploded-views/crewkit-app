@@ -1,0 +1,13 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+  # zizmor suggests `uses: $/...` for local actions, which actionlint 1.7.12 (the newest) rejects
+  # as an invalid action reference. Re-enable when actionlint accepts it.
+  self-repository:
+    disable: true
+  # The owner's rule is a 2-day cooldown ("a day or two old is fine"); CI's outdated job uses the same.
+  dependabot-cooldown:
+    config:
+      days: 2

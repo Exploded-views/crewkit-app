@@ -1,0 +1,22 @@
+{
+  "rust": { "lines": 90, "regions": 90 },
+  "typescript": { "lines": 90, "branches": 90 },
+  "per_file_lines": 70,
+  "diff_lines": 90,
+  "security_critical": {
+    "lines": 95,
+    "regions_or_branches": 90,
+    "files": [
+      "src-tauri/src/cli.rs",
+      "src-tauri/src/crewkit.rs",
+      "src-tauri/src/fix_prompt.rs",
+      "src-tauri/src/terminal.rs",
+      "src-tauri/src/herdr/bridge.rs",
+      "src-tauri/src/commands.rs",
+      "ui/src/lib/PlanDialog.svelte"
+    ]
+  },
+  "not_measured": {
+    "src-tauri/src/main.rs": "Tauri entry point and event-loop glue (tray, window lifecycle, run loop); Tauri's mock runtime only drives these from a loop that sleeps on real time. Keep logic out of it."
+  }
+}

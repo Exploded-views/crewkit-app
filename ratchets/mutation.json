@@ -1,0 +1,16 @@
+{
+  "rust": { "min_score": 85 },
+  "typescript": { "min_score": 85 },
+  "zero_survivors": [
+    "src-tauri/src/cli.rs",
+    "src-tauri/src/crewkit.rs",
+    "src-tauri/src/fix_prompt.rs",
+    "src-tauri/src/terminal.rs",
+    "src-tauri/src/herdr/bridge.rs",
+    "src-tauri/src/commands.rs",
+    "ui/src/lib/PlanDialog.svelte"
+  ],
+  "not_mutated": {
+    "src-tauri/src/main.rs": "Tauri entry point and event-loop glue; see ratchets/coverage.json not_measured."
+  }
+}

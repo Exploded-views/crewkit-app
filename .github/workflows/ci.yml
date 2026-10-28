@@ -1,0 +1,414 @@
+name: CI
+
+# Every Quality Bar gate is its own job; ci-ok is the one required check. Draft PRs run nothing.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * *" # nightly: full mutation runs, and the outdated check against new releases
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  # On pull requests, the commit the PR is measured against (diff coverage and mutation).
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rustfmt:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          node: "false"
+          linux-libs: "false"
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+  clippy:
+    if: github.event.pull_request.draft != true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          node: "false"
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+
+  rust-tests:
+    if: github.event.pull_request.draft != true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+        with:
+          node: "false"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - name: Tests with coverage (TZ=UTC)
+        env:
+          TZ: UTC
+        run: |
+          mkdir -p coverage
+          cargo llvm-cov --manifest-path src-tauri/Cargo.toml --ignore-filename-regex 'src[/\\]main\.rs$' \
+            --json --summary-only --output-path coverage/rust-summary.json
+          cargo llvm-cov report --manifest-path src-tauri/Cargo.toml --ignore-filename-regex 'src[/\\]main\.rs$' \
+            --lcov --output-path coverage/rust.lcov
+      - name: Coverage floors, denominator and diff coverage
+        run: node tools/coverage-gate.ts rust ${BASE_SHA:+"$BASE_SHA"}
+      - name: Tests under other time zones
+        run: |
+          TZ=America/New_York cargo test --manifest-path src-tauri/Cargo.toml
+          TZ=Asia/Tokyo cargo test --manifest-path src-tauri/Cargo.toml
+
+  cargo-deny:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          node: "false"
+          linux-libs: "false"
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny@0.20.2
+      - run: cargo deny --manifest-path src-tauri/Cargo.toml check
+
+  eslint:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - run: npm run lint
+
+  prettier:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - run: npm run format:check
+
+  typecheck:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - run: npm run check
+
+  knip:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - run: npm run knip
+
+  ts-tests:
+    if: github.event.pull_request.draft != true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - name: Tests with coverage (TZ=UTC)
+        env:
+          TZ: UTC
+        run: npm run test:coverage
+      - name: Coverage floors, denominator and diff coverage
+        run: node tools/coverage-gate.ts typescript ${BASE_SHA:+"$BASE_SHA"}
+      - name: Tests under other time zones
+        run: |
+          TZ=America/New_York npm test
+          TZ=Asia/Tokyo npm test
+
+  mutation:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-mutants@27.1.0
+      - name: Rust mutants (the PR's changes; everything nightly)
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          args=()
+          if [[ "$EVENT" == pull_request ]]; then
+            git diff --relative=src-tauri "$BASE_SHA"...HEAD -- src-tauri > "$RUNNER_TEMP/rust.diff"
+            if [[ ! -s "$RUNNER_TEMP/rust.diff" ]]; then echo "no Rust changes"; exit 0; fi
+            args=(--in-diff "$RUNNER_TEMP/rust.diff")
+          fi
+          rc=0
+          cargo mutants --dir src-tauri --output src-tauri --no-shuffle "${args[@]}" || rc=$?
+          # 0: all caught, 2: some missed, 3: some timed out. The gate below judges the score.
+          if [[ $rc != 0 && $rc != 2 && $rc != 3 ]]; then exit "$rc"; fi
+          if [[ -f src-tauri/mutants.out/outcomes.json ]]; then node tools/mutation-gate.ts rust; fi
+      - name: TypeScript mutants (the PR's changes; everything nightly)
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          args=()
+          if [[ "$EVENT" == pull_request ]]; then
+            changed=$(git diff --name-only --diff-filter=AM "$BASE_SHA"...HEAD -- 'ui/src/*.ts' 'ui/src/*.svelte' \
+              | grep -vE '\.test\.ts$|(^|/)test-setup\.ts$|\.d\.ts$' | paste -sd, - || true)
+            if [[ -z "$changed" ]]; then echo "no TypeScript changes"; exit 0; fi
+            args=(--mutate "$changed")
+          fi
+          npx stryker run "${args[@]}"
+          node tools/mutation-gate.ts typescript
+
+  file-size:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tools/file-size.sh
+
+  suppressions:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: tools/count-suppressions.sh
+
+  ratchets:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Ratchets change only in chore/ratchet-* PRs, and only one way
+        env:
+          HEAD_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if [[ -z "$BASE_SHA" ]]; then echo "no base to compare against"; exit 0; fi
+          node tools/ratchet-guard.ts "$BASE_SHA" "$HEAD_BRANCH"
+
+  gitleaks:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install gitleaks 8.30.1
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tar.gz" \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  $RUNNER_TEMP/gitleaks.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+      - name: gitleaks over the full history
+        run: '"$RUNNER_TEMP/gitleaks" detect --redact --no-banner'
+
+  npm-audit:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - name: npm audit --audit-level=low, minus the advisories in docs/dependency-exceptions.md
+        run: node tools/deps-check.ts audit
+
+  licenses:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - run: npm run licenses
+
+  outdated:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          linux-libs: "false"
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-outdated@0.19.0
+      - name: Newest stable releases at least 2 days old, minus docs/dependency-exceptions.md
+        run: node tools/deps-check.ts outdated
+
+  workflows:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint 1.7.12
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" \
+            | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+      - run: '"$RUNNER_TEMP/actionlint" -color'
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: zizmor@1.31.1
+      - name: zizmor (every action pinned by commit SHA; see .github/zizmor.yml)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --min-severity informational .github
+
+  commitlint:
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+        with:
+          rust: "false"
+          linux-libs: "false"
+      - name: Conventional Commits
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then npx commitlint --last; exit; fi
+          npx commitlint --from "$BASE_SHA" --to HEAD
+
+  build:
+    if: github.event.pull_request.draft != true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Unsigned build, no bundle
+        run: npm run tauri build -- --no-bundle
+
+  ci-ok:
+    if: always() && github.event.pull_request.draft != true
+    needs:
+      - rustfmt
+      - clippy
+      - rust-tests
+      - cargo-deny
+      - eslint
+      - prettier
+      - typecheck
+      - knip
+      - ts-tests
+      - mutation
+      - file-size
+      - suppressions
+      - ratchets
+      - gitleaks
+      - npm-audit
+      - licenses
+      - outdated
+      - workflows
+      - commitlint
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$RESULTS"
+          jq -e 'all(.[]; .result == "success")' <<<"$RESULTS" >/dev/null

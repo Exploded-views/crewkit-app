@@ -1,0 +1,64 @@
+$ cd src-tauri && cargo test
+    Updating crates.io index
+     Locking 11 packages to highest Rust 1.99 compatible versions
+ Downloading crates ...
+  Downloaded itoa v1.0.18
+  Downloaded serde_json v1.0.154
+  Downloaded serde_core v1.0.229
+  Downloaded memchr v2.8.3
+  Downloaded zmij v1.0.23
+   Compiling zmij v1.0.23
+   Compiling serde_core v1.0.229
+   Compiling serde_json v1.0.154
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling crewkit v0.1.0 (<repo>/src-tauri)
+error: couldn't read `src/../tauri.conf.json`: No such file or directory (os error 2)
+ --> src/main.rs:8:34
+  |
+8 |             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+  |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `crewkit` (bin "crewkit" test) due to 1 previous error
+exit: 101
+
+$ npm test
+
+> crewkit-app@0.1.0 test
+> vitest run --config ui/vite.config.ts
+
+7:10:55 PM [vite-plugin-svelte] no Svelte config found at <repo>/ui - using default configuration.
+
+ RUN  v5.0.5 <repo>/ui
+
+ ❯ src/App.test.ts (0 test)
+
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/App.test.ts [ src/App.test.ts ]
+Error: Failed to resolve import "./App.svelte" from "ui/src/App.test.ts". Does the file exist?
+  Plugin: vite:import-analysis
+  File: <repo>/ui/src/App.test.ts:3:16
+  1  |  import { render, screen } from "@testing-library/svelte";
+  2  |  import { expect, test } from "vitest";
+  3  |  import App from "./App.svelte";
+     |                   ^
+  4  |  test("renders the empty crew map placeholder", () => {
+  5  |  	render(App);
+ ❯ TransformPluginContext._formatLog ../node_modules/vite/dist/node/chunks/node.js:8803:39
+ ❯ TransformPluginContext.error ../node_modules/vite/dist/node/chunks/node.js:8800:14
+ ❯ resolveId ../node_modules/vite/dist/node/chunks/node.js:26594:18
+ ❯ ../node_modules/vite/dist/node/chunks/node.js:26693:23
+ ❯ TransformPluginContext.transform ../node_modules/vite/dist/node/chunks/node.js:26666:4
+ ❯ EnvironmentPluginContainer.transform ../node_modules/vite/dist/node/chunks/node.js:8582:14
+ ❯ loadAndTransform ../node_modules/vite/dist/node/chunks/node.js:20155:26
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  no tests
+   Start at  19:10:55
+   Duration  1.02s (environment 99%, worker 1%)
+
+exit: 1

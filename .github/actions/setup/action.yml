@@ -1,0 +1,41 @@
+name: Set up
+description: Node (from .node-version) with npm ci, the Rust toolchain (from rust-toolchain.toml) with a cache, and Tauri's Linux libraries.
+inputs:
+  node:
+    description: Install Node and run npm ci
+    default: "true"
+  rust:
+    description: Install the Rust toolchain and restore the cargo cache
+    default: "true"
+  linux-libs:
+    description: On Linux, install the webkit2gtk and tray libraries Tauri builds against
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Tauri Linux libraries
+      if: runner.os == 'Linux' && inputs.linux-libs == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+    - name: Node
+      if: inputs.node == 'true'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .node-version
+    - name: npm ci
+      if: inputs.node == 'true'
+      shell: bash
+      run: npm ci
+    - name: Rust toolchain
+      if: inputs.rust == 'true'
+      shell: bash
+      working-directory: src-tauri
+      run: rustup toolchain install
+    - name: Cargo cache
+      if: inputs.rust == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: src-tauri
