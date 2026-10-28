@@ -500,7 +500,9 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     1. it calls `stop_action()` first if an action is running, so the action gets the same graceful stop without being asked;
     2. it then ends every other child the app started (the local herdr subscription, bridges, any read-only CLI), with one 2 s budget across all of them: SIGTERM to each process group, then SIGKILL to any still alive at the deadline.
     - Every child is spawned in its own process group (`process_group(0)` through `cli::command`) with `kill_on_drop(true)`, so signals reach grandchildren too.
-  - **Alerts:** each `Alert` from `CrewState::tick` while the app isn't focused calls `Attention::bounce()` once. There are no system notifications in release 1.
+  - **Alerts:** each `Alert` from `CrewState::tick` while the app isn't focused calls `Attention::bounce()` at most once per raise key. There are no system notifications in release 1, and nothing reminds on a timer.
+    - `fn raise_key(alert: &Alert) -> String` is `"{node}/{agent}@{status}"` (the spec's id@rev: the agent is the id, its status is the rev).
+    - `struct Raised` holds the keys already bounced, saved as `raised.json` in the app's data dir and loaded at launch, so a restart doesn't bounce again. A key is dropped when its item leaves needs-you (resolved), so a later fresh raise bounces once.
   - **Dock badge:** `fn badge_for(needs_you: u32) -> Option<i64>`, `None` at 0, is applied through Task 1b's `Badge` whenever `needs_you` changes. It is never stale: if `docs/decisions.md` records the fallback, the badge is cleared on close.
   - **Optional status item** (`status_item.rs`), shown only when `prefs.status_item` (default off):
     - `fn apply_status_item(app, on: bool)` creates or removes it with id `status`;
@@ -525,6 +527,9 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `shutdown during an apply stops it gracefully and logs the outcome` (the Dock › Quit path: the fake crewkit writes a result on TERM, and the outcome is logged);
   - `no process survives quit`: the runner spawns `sh -c 'sleep 600 & wait'`, plus a fake bridge child. After `shutdown()`, both direct pids and the grandchild `sleep` pid are gone (`kill(pid, 0)` fails), and `shutdown()` returned within 2.5 s;
   - `an alert while unfocused bounces once` (Attention fake).
+  - `the same raise key bounces once, including after a restart` (Attention fake; `Raised` reloaded from a temp dir between ticks);
+  - `a changed status is a new raise and bounces once`;
+  - `a resolved item that is raised again bounces once more`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement** the scheduler, commands, badge and status item, and wire them up in `main.rs`.
 - [ ] **Step 4: Run the tests,** then `npm run tauri dev` with fixtures (`CREWKIT_APP_FIXTURES=src-tauri/tests/fixtures` makes `RealRunner` answer `status` and `doctor` from files; behind the `fixtures` cargo feature, never in a release bundle). Expected:
