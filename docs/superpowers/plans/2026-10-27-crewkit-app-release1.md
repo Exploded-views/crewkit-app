@@ -17,7 +17,7 @@
 - No secrets in the repo or in CI. CI runs only on free GitHub-hosted runners, builds and tests unsigned artifacts, and has no signing step.
 - A normal windowed app (owner, 2026-10-28: "Yeah normal Mac app please"): Dock icon, standard app menu, a main window with a sidebar (Crews, Doctor, Install & upgrade, Join a node) and a Settings window. The needs-you count is the Dock badge. The menu-bar status item is optional, off by default, and only a dot, a count and a click to open the window.
 - No daemon or helper process of its own. Closing the window keeps the app in the Dock with its webview destroyed; quitting ends everything the app started.
-- Lightness budget: window open on the map, idle, under 150 MB RSS and no CPU when nothing changes; window closed, app in the Dock, under 50 MB and no CPU; cold start to a drawn map from cached state under one second; reopening a closed window from the Dock under 500 ms to a drawn map. A regression past budget blocks the release.
+- Lightness budget (memory is macOS phys_footprint over the app and its WebKit helpers, median of 5): window open on the map, idle, under 150 MB and no CPU when nothing changes; window closed, app in the Dock, under 50 MB and no CPU; cold start to a drawn map from cached state under one second; reopening a closed window from the Dock under 500 ms to a drawn map. A regression past budget blocks the release.
 - Every state change goes through a CLI: crewkit's, or `install.sh` where crewkit delegates. The app never writes crewkit settings, gate keys, `nodes.*`, `registry.*`, `limits.*` or labels.
 - Never read secrets: `~/code/.crew/secrets`, `~/.config/claude-memsync`, `~/.config/crewkit`, age identities, `state_dir/registry/tokens.tsv`, node keys, client-node screen text.
 - No live herdr connection to a node with `boundary: "client"`. Client boxes come only from `crewkit status --json`.
@@ -154,7 +154,9 @@ Owner: code quality must be "impeccable", at least as strict as the owner's thre
 src-tauri/
   Cargo.toml, tauri.conf.json, capabilities/default.json
   src/main.rs            app setup: window lifecycle, Dock reopen, plugin registration, state wiring
-  src/menu.rs            the standard app menu (Settings, Refresh, Run Doctor)
+  src/lifecycle.rs       pure window, reopen and quit rules (unit-tested; main.rs stays glue)
+  src/menu.rs            the app menu as data (menu_spec) and its builder
+  src/keeper.rs          the hidden no-webview window: keeps the app alive, carries the Dock badge
   src/status_item.rs     the optional menu-bar status item (off by default)
   src/model.rs           serde types for crewkit.status/v1, doctor/v1, plan/v1; schema check
   src/cli.rs             CliRunner trait, the real runner, the tool search path, the write lock
@@ -216,40 +218,78 @@ README.md, LICENSE (MIT)
 
 ### Task 1b: Windowed app shell (revision 2026-10-28)
 
-The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app please". Task 1 built a menu-bar app (`ActivationPolicy::Accessory`, a window hidden at launch, a tray icon). This task turns that into a normal windowed app before anything builds on it.
+The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app please". Task 1 built a menu-bar app: `ActivationPolicy::Accessory`, a window hidden at launch, the tray as the entry point, and menu-bar wording throughout. This task turns that into a normal windowed app before anything builds on it. Tasks 2-6 don't depend on it and may run before or after it. Task 7 needs it.
 
 **Files:**
 
-- Create: `src-tauri/src/menu.rs`
-- Modify: `src-tauri/src/main.rs`, `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/capabilities/default.json`
-- Test: tests modules in `main.rs` and `menu.rs`
+- Create: `src-tauri/src/menu.rs`, `src-tauri/src/keeper.rs`, `docs/decisions.md`, `tools/no-menubar-wording.sh`
+- Modify:
+  - `src-tauri/src/main.rs` (the module doc; drop the accessory policy and the tray glue) and `src-tauri/src/lifecycle.rs` (drop the tray functions and tests);
+  - `src-tauri/tauri.conf.json` (`main` and `settings` windows) and `src-tauri/capabilities/default.json` (`windows: ["main", "settings"]`);
+  - `src-tauri/Cargo.toml` (description, keywords, the `unstable` feature; keep `tray-icon` for Task 7) and `package.json` (description);
+  - `README.md`, `ratchets/coverage.json` (the `main.rs` reason), `.github/actions/setup/action.yml` (the Linux libraries description) and `deny.toml` (the RUSTSEC reason);
+  - `docs/dependency-exceptions.md` (a row for Tauri's `unstable` feature) and `ui/src/App.svelte` (render the Settings placeholder in the `settings` window).
+- Test: tests modules in `lifecycle.rs`, `menu.rs` and `keeper.rs`; `ui/src/App.test.ts`; CI runs `tools/no-menubar-wording.sh`.
 
 **Interfaces:**
 
-- Consumes: Task 1's scaffold.
+- Consumes: Task 1's scaffold, including `lifecycle.rs`'s pure functions.
 - Produces:
-  - The main window: label `main`, title `crewkit`, visible at launch, 1100×720 by default, minimum 800×520. `tauri-plugin-window-state` restores its size and position.
-  - The default activation policy (Regular): a Dock icon and Cmd-Tab. No `set_activation_policy` call and no `LSUIElement`.
-  - Closing the window destroys it and the app keeps running (`RunEvent::ExitRequested` with no code → `prevent_exit`). `RunEvent::Reopen` (a Dock click) recreates the main window when none exists. Cmd-Q quits.
-  - `menu.rs`: `pub fn app_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>>`. It builds the menus:
-    - crewkit: About, Settings… (Cmd-,), Hide, Quit;
-    - Edit: the standard items;
-    - View: Refresh (Cmd-R) and Run Doctor (Cmd-Shift-D);
-    - Window: Minimize and Zoom;
-    - Help.
-  - Menu ids are the public consts `MENU_SETTINGS`, `MENU_REFRESH` and `MENU_RUN_DOCTOR`. Until Task 7, they emit the UI events `menu-settings`, `menu-refresh` and `menu-run-doctor`, which nothing handles yet.
-  - No tray in this task. Remove the tray code and the `tray-icon` feature. Task 7 adds the optional status item back.
+  - **Windows, both built from `tauri.conf.json` with `WebviewWindowBuilder::from_config` on launch and on every reopen, so code can't drift from config.** Each one is created hidden, has its saved state restored (`tauri-plugin-window-state`), and is then shown.
+    - The main window: label `main`, title `crewkit`, 1100×720 by default, minimum 800×520.
+    - The Settings window: label `settings`, title `Settings`, 560×440, not resizable, created on demand. Cmd-, opens it, or focuses it if it's already open: never a second one. Closing it destroys it. It renders a "Settings" placeholder until Task 11 fills it.
+  - **The default (Regular) activation policy:** a Dock icon and Cmd-Tab. No `set_activation_policy` call and no `LSUIElement`.
+  - **The keeper window** (`keeper.rs`): one hidden window with no webview, label `keeper`. It's built with Tauri's `unstable` `WindowBuilder` at launch and never shown. It does two jobs on macOS:
+    - it keeps the app alive when `main` closes, so the app needs no `prevent_exit` and Cmd-Q, Dock › Quit and log-out quit normally;
+    - it's the handle the Dock badge goes through (`Badge`, below).
+    - The `unstable` feature is recorded in `docs/dependency-exceptions.md`, with its reason and the Tauri issue to watch.
+  - **Lifecycle** (`lifecycle.rs`, pure and unit-tested; `main.rs` stays glue and tests never call `app.run()`):
+    - `fn close_action(label) -> CloseAction`: `main` and `settings` are destroyed on close.
+    - `fn on_reopen(windows: &[&str]) -> ReopenAction`: `main` present → `ShowAndFocus`, else `CreateMain`. It looks for the `main` label specifically, never "any window" (the keeper always exists).
+    - `fn should_prevent_exit(os, code) -> bool`: `false` everywhere when the keeper exists. On Windows and Linux, closing the last window quits (no keeper there).
+    - `fn quit_request(write_lock_held: bool) -> QuitAction`: `Exit` when no action is running, `AskFirst` when one is. Task 7 wires `AskFirst` to its sheet; until then the lock is never held.
+  - **The app menu.** `menu.rs` exposes `pub fn menu_spec() -> Vec<MenuSpec>`, pure data (ids, labels, accelerators, predefined kinds) that tests check. `pub fn build_menu<R: Runtime>(app, &[MenuSpec]) -> tauri::Result<Menu<R>>` turns it into muda menus on the main thread and isn't unit-tested.
+    - crewkit: About crewkit; Settings… `CmdOrCtrl+,`; Hide crewkit `CmdOrCtrl+H`; Hide Others `Alt+CmdOrCtrl+H`; Show All; Quit crewkit `CmdOrCtrl+Q`. Quit is a custom item, id `quit`, that goes through `quit_request` and then `app.exit(0)`.
+    - Edit: Undo, Redo, Cut, Copy, Paste, Select All (predefined).
+    - View: Refresh `CmdOrCtrl+R`; Run Doctor `Shift+CmdOrCtrl+D`; Enter Full Screen `Ctrl+CmdOrCtrl+F`.
+    - Window: Close Window `CmdOrCtrl+W`; Minimize `CmdOrCtrl+M`; Zoom; Bring All to Front.
+    - Help: crewkit Help, which opens the repo's README in the browser.
+  - **Menu events are handled in Rust only.** `menu.rs` has `fn menu_action(id) -> Option<MenuAction>` (`Settings`, `Refresh`, `RunDoctor`, `Quit`, `Help`). Refresh and RunDoctor are no-ops until Task 7.
+  - **The Badge seam:** `trait Badge { fn set(&self, count: Option<i64>) -> tauri::Result<()>; }`. `KeeperBadge` implements it with the keeper's `set_badge_count`, and tests use a recording fake.
+- **Never a stale count:** if `docs/decisions.md` records that the keeper can't badge, the badge is cleared whenever `main` closes and set again on reopen.
 
 - [ ] **Step 1: Write the failing tests:**
-  - `main_window_is_visible_at_launch`: in `tauri.conf.json`, `main` has `visible: true`, `minWidth: 800` and `minHeight: 520`. It replaces Task 1's `visible == false` assertion.
-  - `app_menu_has_settings_refresh_and_doctor`: build the menu on `tauri::test::mock_app()` and find each of the three ids.
-  - `reopen_recreates_the_main_window`: on a mock app with no window, `on_reopen` creates `main`; with `main` present it only shows and focuses it.
+  - `windows_come_from_config`: `tauri.conf.json` has `main` (`visible: false`, `create: false`, 1100×720, min 800×520) and `settings` (560×440, `resizable: false`, `create: false`). Both labels are in `capabilities/default.json` `windows`. This replaces Task 1's `visible == false`-only assertion.
+  - `closing main or settings destroys it`; `reopen with main present shows and focuses it`; `reopen without main creates it, even when keeper exists`.
+  - `the keeper keeps the app alive, so no exit is prevented on macOS`; `closing the last window quits on Windows and Linux`.
+  - `quit with no action running exits` and `quit while an action runs asks first`.
+  - `menu_spec has every item with its exact accelerator` and `every custom menu id maps to an action`. Each accelerator is asserted as a string, so a mutant that changes one fails.
+  - `settings opens once and then focuses`: on a mock app, two Settings actions leave one `settings` window.
+  - `badge seam`: `KeeperBadge`'s logic, driven through the fake, sends `None` for 0 and `Some(n)` otherwise.
+  - vitest: `the settings window renders the Settings placeholder`.
+  - `tools/no-menubar-wording.sh` fails on `menu.?bar|tray|Accessory|LSUIElement` (case-insensitive) in tracked files other than `src-tauri/src/status_item.rs`, `docs/superpowers/`, `docs/decisions.md` and the lockfiles.
+    - It is RED against Task 1's scaffold.
+    - It's a CI job feeding `ci-ok`.
+    - Task 7 adds the `tray-icon` feature line in `Cargo.toml` to its allowlist.
 - [ ] **Step 2: Run them.** Expected: FAIL.
-- [ ] **Step 3: Implement.** Remove the accessory policy, the tray and `visible: false`; add the menu, the reopen handler and window-state.
-- [ ] **Step 4: Check the Dock badge on the owner's Mac (manual, recorded in the report).** Does a badge set before the main window is destroyed stay on the Dock icon after it? And can the badge be updated while no window exists?
-  - If it can't be updated, keep one hidden window with no webview through Tauri's `unstable` window builder (Task 7 badges through it). Record which in `docs/decisions.md`.
-  - If that isn't possible either, the badge updates on reopen, and the optional status item carries the live count while the window is closed.
-- [ ] **Step 5: Run the tests,** then `npm run tauri dev`. Expected: PASS; a Dock icon; the window opens at launch; closing it leaves the app in the Dock; a Dock click reopens it.
+- [ ] **Step 3: Implement.**
+  - Remove the accessory policy, the tray glue and the menu-bar wording.
+  - Add the menu, the keeper, the Settings window and the reopen handler. Use `window-state`, and build every window hidden, then restore, then show.
+- [ ] **Step 4: Check on the owner's Mac (manual; record each result in `docs/decisions.md`).**
+  - Close `main` and confirm the app stays in the Dock.
+  - Confirm the Dock badge updates while `main` is closed (via a fixtures-only command that sets it).
+  - Confirm Cmd-Q, Dock › Quit and log-out each quit.
+  - Confirm Cmd-W closes the window and Cmd-, opens Settings once.
+  - **If the keeper can't badge or can't keep the app alive:**
+    - use `prevent_exit` on macOS only, for `code == None` right after `main` closes;
+    - re-check that Cmd-Q, Dock › Quit and log-out still quit;
+    - clear the badge on close;
+    - record it.
+- [ ] **Step 5: Run the tests,** then `npm run tauri dev`. Expected:
+  - the tests PASS;
+  - a Dock icon shows, and the window opens at launch where it was last left;
+  - closing the window leaves the app in the Dock, and a Dock click reopens it;
+  - Cmd-Q quits.
 - [ ] **Step 6: Commit** `feat: windowed app shell with dock icon and app menu`.
 
 ### Task 2: The crewkit JSON contract types
@@ -428,7 +468,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 
 **Interfaces:**
 
-- Consumes: `CrewkitClient`, `CrewState`, `LocalHerdr`, `Bridge`, `Prefs`, Task 1b's menu ids
+- Consumes: `CrewkitClient`, `CrewState`, `LocalHerdr`, `Bridge`, `Prefs`, Task 1b's `menu_action`, `quit_request`, `Badge` and keeper
 - Produces:
   - `struct Scheduler` with `fn start(…)`. It does three things:
     - runs `status` at launch, every 300 s, and on wake;
@@ -440,13 +480,20 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - Tauri commands:
     - reads: `get_map`, `get_doctor`, `get_pieces`, `get_prefs`, `set_prefs`;
     - actions: `plan_action(argv)`, `apply_action(argv)`, `open_lead(node)`, `fix_with_agent(check_id, node)`.
-  - Menu handlers: Refresh runs `status` now, Run Doctor runs `doctor` now, and Settings opens the `settings` window (Task 11 fills it).
-  - **Dock badge:** `fn badge_for(needs_you: u32) -> Option<i64>`, `None` at 0. It is applied whenever `needs_you` changes, through the path Task 1b recorded in `docs/decisions.md`.
+  - Menu actions (handled in Rust): Refresh runs `status` now, and Run Doctor runs `doctor` now.
+  - **Quit while an action runs:** `quit_request(true)` shows a sheet in the main window: "An action is running (<verb>). Quit anyway? crewkit will stop it." It has two buttons:
+    - **Cancel** keeps the app running.
+    - **Quit anyway** sends SIGTERM to the running crewkit and waits up to 10 s for its `crewkit.result/v1` (crewkit writes one on TERM). It then logs the outcome and exits.
+  - **On exit** (`RunEvent::Exit`), `Scheduler::shutdown()` ends every child the app started (local herdr subscription, bridges, any CLI) and waits up to 2 s for each. All of them are spawned with `kill_on_drop(true)`.
+  - **Alerts:** each `Alert` from `CrewState::tick` while the app isn't focused bounces the Dock icon once (`request_user_attention(Informational)` through the keeper). There are no system notifications in release 1.
+  - **Dock badge:** `fn badge_for(needs_you: u32) -> Option<i64>`, `None` at 0, is applied through Task 1b's `Badge` whenever `needs_you` changes. It is never stale: if `docs/decisions.md` records the fallback, the badge is cleared on close.
   - **Optional status item** (`status_item.rs`), shown only when `prefs.status_item` (default off):
     - `fn apply_status_item(app, on: bool)` creates or removes it with id `status`;
     - title `N`, or empty at 0; the icon is red when `needs_you > 0`;
     - a click opens the main window; the menu is "Open crewkit" and "Quit";
-    - it has no webview of its own.
+    - it has no webview of its own;
+    - Settings toggles it, and it applies immediately.
+    - Add the `tray-icon` line in `Cargo.toml` to `tools/no-menubar-wording.sh`'s allowlist.
   - Launch at login uses `tauri-plugin-autostart`, enabled only when `prefs.launch_at_login`.
 
 - [ ] **Step 1: Write the failing tests:**
@@ -456,7 +503,11 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `bridges open only for owner remote nodes with a machine label`;
   - `closing the window closes every bridge`;
   - `badge is None at zero and the count otherwise`;
-  - `status item exists only while prefs.status_item is on` (mock app: on → `tray_by_id("status")` is `Some`; off → `None`).
+  - `status item exists only while prefs.status_item is on` (mock app: on → `tray_by_id("status")` is `Some`; off → `None`);
+  - `needs_you changes reach the Badge fake` (0 → `None`, 3 → `Some(3)`);
+  - `quit while an apply runs asks first; Quit anyway terminates the child and exits`;
+  - `no child process survives quit`: start the scheduler with a runner that spawns `sleep 600` and a fake bridge child, call `shutdown()`, and assert both pids are gone (`kill(pid, 0)` fails);
+  - `an alert while unfocused requests attention once`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement** the scheduler, commands, badge and status item, and wire them up in `main.rs`.
 - [ ] **Step 4: Run the tests,** then `npm run tauri dev` with fixtures (`CREWKIT_APP_FIXTURES=src-tauri/tests/fixtures` makes `RealRunner` answer `status` and `doctor` from files; behind the `fixtures` cargo feature, never in a release bundle). Expected:
@@ -475,7 +526,10 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 
 - Consumes: the `map-updated` event and `get_map` (`MapView`, mirrored as TypeScript types in `api.ts`)
 - Produces:
-  - `<Shell />`: the main window. A sidebar with Crews (default), Doctor, Install & upgrade and Join a node, and the selected view beside it. Crew detail (Task 9) replaces the map in the same window, with a back button. Later tasks register their views here. Navigation needs no router library.
+  - `<Shell />`: the main window. A sidebar with Crews (default), Doctor, Install & upgrade and Join a node, and the selected view beside it. Navigation needs no router library.
+    - Views register through one exported `views` table (`{ id, label, component }`). Tasks 10 and 11 add theirs there; until then, those entries render a "Coming in this release" placeholder.
+    - The last selected view is remembered in `localStorage` (inside try/catch, falling back to Crews).
+    - Crew detail (Task 9) replaces the map in the same window, with a back button and Escape.
   - `<CrewMap view={MapView} on:openCrew={crewName} on:fix={{checkId,node}} />`
   - A **crew box** per crew:
     - nodes, each with a placement pill (`Mac`, `ssh`, `cloud`, `homelab`);
@@ -494,7 +548,9 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `agent names render as text` (an agent named `<img src=x onerror=alert(1)>` appears literally, and no `img` element exists);
   - `stale banner shows age`;
   - `bridge crews are joined by a line`;
-  - `shell opens on Crews and the sidebar switches views`.
+  - `shell opens on Crews and the sidebar switches views`;
+  - `every sidebar entry comes from the views table`;
+  - `the last view is restored, and a broken localStorage falls back to Crews`.
 - [ ] **Step 2: Run them:** `npm test`. Expected: FAIL.
 - [ ] **Step 3: Implement** the components. Lay out with CSS grid (no canvas library). Draw lines in one SVG overlay from box centers. Never use `{@html}`. Style: calm, dense, dark/light from the OS (layout B in the spec's `crewkit-app/crew-map.html`).
 - [ ] **Step 4: Run them.** Expected: PASS.
@@ -521,7 +577,8 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - Rust: `script quotes every argv element` (an argument with spaces and `$()` stays literal);
   - Rust: `unknown terminal falls back to Terminal`;
   - vitest: `unenforced limit is yellow with reason`;
-  - vitest: `Open lead invokes open_lead with the node codename`.
+  - vitest: `Open lead invokes open_lead with the node codename`;
+  - vitest: `crew detail opens in the main window and Back and Escape return to the map`.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them.** Expected: PASS.
@@ -598,7 +655,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - InstallView lists pieces from `detect` with **Install** or **Upgrade** buttons, showing the plan first.
   - `Paused(plan)` renders each `owner_steps[]` item as an `OwnerCard`, with **Check again** re-running the plan.
   - JoinFlow follows plan → Run → owner cards → when done, it refreshes `status` and highlights the new node's crew box.
-  - Prefs, in the Settings window (Cmd-,), lets the user choose the terminal, the agent, `crewkit_dir`, launch at login and the menu-bar status item.
+  - Prefs fills Task 1b's Settings window (Cmd-,). It lets the user choose the terminal, the agent, `crewkit_dir`, launch at login and the status item, and each change applies immediately through `set_prefs`.
 
 - [ ] **Step 1: Write the failing tests:**
   - `install_argv has no --yes`;
@@ -617,24 +674,32 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 **Files:**
 
 - Create: `tools/perf-budget.sh`, `docs/releasing.md`
-- Modify: `src-tauri/tauri.conf.json` (bundle: DMG and app, macOS 13 minimum, hardened runtime, entitlements without network-server or camera), `README.md`
+- Modify: `src-tauri/src/commands.rs` and `src-tauri/src/main.rs` (the fixtures-only `perf_mark` command and SIGUSR1 handler), `ui/src/lib/Shell.svelte` (call `perf_mark` after the first paint with data), `src-tauri/tauri.conf.json` (bundle: DMG and app, macOS 13 minimum, hardened runtime, entitlements without network-server or camera), `README.md`
 
 **Interfaces:**
 
 - Consumes: the built app
 - Produces:
   - `tools/perf-budget.sh <app-path>`:
-    1. launches the app with fixtures and measures from launch to the `map-drawn` log line, under 1000 ms;
-    2. waits 10 s with the window open and checks summed RSS (`ps -o rss` over the app and its webview processes) is under 153600 KB;
-    3. closes the window, waits 10 s, and checks under 51200 KB;
-    4. reopens it (`open -a` on the running app, which raises Reopen) and measures to the next `map-drawn`, under 500 ms;
-    5. exits non-zero on any miss and prints the four numbers.
-  - The UI logs `map-drawn` on the first paint with data after each window creation.
+    - Builds with `--release --features fixtures` and runs the app with `CREWKIT_APP_PERF_LOG=<tmp>/perf.log`. In fixtures builds only:
+      - the UI's fixtures-only `perf_mark` command appends `map-drawn <ms since process start>` to that file after each window creation;
+      - SIGUSR1 closes `main`;
+      - `open -a` on the running app raises Reopen.
+    - **Memory is phys_footprint, not summed RSS.** `footprint` is run on the app pid and its WebKit helper processes (`com.apple.WebKit.*`).
+      - Step 1 decides how to tell its helpers from other apps' and records the method in `docs/decisions.md`.
+      - The method must be proved by measuring with Safari open, which must not change the numbers.
+    - The script does each of these 5 times and takes the median:
+      1. launch to the first `map-drawn`, under 1000 ms;
+      2. footprint 10 s after launch with the window open, under 150 MB;
+      3. SIGUSR1, then footprint 10 s later, under 50 MB;
+      4. reopen to the next `map-drawn`, under 500 ms.
+    - It prints the four medians and exits non-zero on any miss.
+    - The timings (1 and 4) gate only on the owner's Mac. CI on `macos-latest` gates the two memory numbers and only prints the timings, because hosted runners are too noisy to gate timings.
   - `docs/releasing.md` covers the local steps: `npm run tauri build` with `APPLE_SIGNING_IDENTITY` from the owner's keychain, `xcrun notarytool submit --keychain-profile <profile> --wait`, `xcrun stapler staple`. No credentials are written to the repo.
 
 - [ ] **Step 1: Write the failing check:** run `tools/perf-budget.sh` against the Task 11 build. Expected: it runs and prints numbers; the build fails on any number over budget.
 - [ ] **Step 2: Fix any budget misses.** Typical causes: the webview kept alive when closed, polling instead of events, or a heavy UI dependency.
-- [ ] **Step 3: Add `perf-budget.sh` to CI on `macos-latest`** (unsigned build, fixtures mode) so a regression fails CI.
+- [ ] **Step 3: Add `perf-budget.sh` to CI on `macos-latest`** (unsigned build, fixtures mode) so a memory regression fails CI. Timings print there, and gate on the owner's Mac before a release.
 - [ ] **Step 4: Run** `tools/perf-budget.sh`. Expected: four numbers, all under budget, exit 0.
 - [ ] **Step 5: Owner release (manual, on the owner's Mac):** follow `docs/releasing.md`, then `spctl -a -vv crewkit.app`. Expected: `accepted, source=Notarized Developer ID`.
 - [ ] **Step 6: Commit** `chore: lightness budget, packaging and release docs`.
