@@ -19,10 +19,10 @@
 - No daemon or helper process of its own. Closing the window keeps the app in the Dock with its webview destroyed; quitting ends everything the app started.
 - Lightness budget (memory is macOS phys_footprint over the app and its WebKit helpers, median of 5): window open on the map, idle, under 150 MB and no CPU when nothing changes; window closed, app in the Dock, under 50 MB and no CPU; cold start to a drawn map from cached state under one second; reopening a closed window from the Dock under 500 ms to a drawn map. A regression past budget blocks the release.
 - Budget (big idea, tiny computer; owner rule 2026-10-28), each number enforced by a test that fails over budget:
-  - **Idle CPU** under 1% averaged over 60 s, window open and idle and window closed, measured as the app's plus its WebKit helpers' CPU time delta divided by wall time (Task 12).
-  - **Hot path at p95:** a status refresh's in-app work (parse a 50-node `crewkit status --json` fixture, `apply_status`, `tick`, `view`) under 10 ms; one herdr event through `apply_event` and `tick` under 1 ms; 1000 iterations, release build, the CLI's own run time excluded (Task 6).
-  - **Steady memory:** the footprint numbers above, plus no growth: footprint after 1000 fixture refreshes is within 5 MB of after 10 (Task 12).
-  - **No work proportional to unrelated directories:** the app reads only named files and sockets and never lists or walks a directory; startup reads only its own cached state file. A CI check enforces it (Task 1c).
+  - **Idle CPU** under 1% averaged over 60 s, window open and idle and window closed, measured as the CPU-time delta of the app and its own WebKit helpers divided by wall time (Task 12 says how the helpers are found).
+  - **Hot path at p95:** a status refresh's in-app work (parse a 50-node `crewkit status --json` fixture, `apply_status`, `tick`, `view`) under 10 ms; one herdr event through `apply_event` and `tick` under 1 ms; 100 warm-up iterations discarded, then 1000 measured, release build, single-threaded, the CLI's own run time excluded (Task 6).
+  - **Steady memory:** the footprint numbers above, plus no growth: the median of 5 footprints after 1000 fixture refreshes is within 5 MB of the median of 5 after 10 (Task 12).
+  - **No work proportional to unrelated directories:** the app reads only named files and sockets and never lists or walks a directory, in its own code or through a dependency; startup reads only its own cached state file. CI checks the source, the dependencies and the capabilities (Task 1c).
   - Release 1 is Mac-only, so the benchmarks run on the Mac. When a Linux build ships, the same benchmarks run on thehalf's Pi through its operator or a CI-like Docker image, never by ssh from here.
 - Every state change goes through a CLI: crewkit's, or `install.sh` where crewkit delegates. The app never writes crewkit settings, gate keys, `nodes.*`, `registry.*`, `limits.*` or labels.
 - Never read secrets: `~/code/.crew/secrets`, `~/.config/claude-memsync`, `~/.config/crewkit`, age identities, `state_dir/registry/tokens.tsv`, node keys, client-node screen text.
@@ -321,7 +321,11 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 
 - Consumes: Task 1's gate tools; Task 1b's shell
 - Produces:
-  - `tools/no-dir-walk.sh` fails on `read_dir|walkdir|glob\(|WalkDir|readdir|fs\.readdir|opendir` in tracked source under `src-tauri/src/` and `ui/src/` (tests and `tools/` excluded); a bite probe adds a `std::fs::read_dir` call and proves it fails.
+  - `tools/no-dir-walk.sh` has three parts, and each fails the check on its own:
+    1. **Source:** a case-insensitive match (`grep -iE`) on `read_?dir|walk_?dir|opendir|glob\(` in tracked source under `src-tauri/src/` and `ui/src/` (tests and `tools/` excluded). It catches `std::fs::read_dir`, `WalkDir` and the fs plugin's `readDir`.
+    2. **Dependencies:** `tools/deps-check` gains a deny list over the shipped dependency graph, which is Rust normal dependencies from `cargo metadata` (not dev or build) plus npm production `dependencies`. The denied crates are `walkdir`, `ignore`, `jwalk`, `globwalk`, `glob`, `notify` and `tauri-plugin-fs`. The denied npm packages are `@tauri-apps/plugin-fs`, `glob`, `fast-glob` and `chokidar`. A transitive hit fails too, with the path that brought it in.
+    3. **Capabilities:** any `fs:` permission in `src-tauri/capabilities/*.json` fails.
+  - Bite probes, each shown to fail its part: `std::fs::read_dir` in a Rust file, `readDir(` in a Svelte file, `jwalk` added to `[dependencies]`, `@tauri-apps/plugin-fs` added to `dependencies`, and `"fs:allow-read-dir"` added to a capability.
   - Unit tests for each gate tool's pass, fail and malformed-input cases, and a bite probe for every gate Task 1 left unprobed (ledger M2).
 
 - [ ] **Step 1: Write the failing tests** and the bite probes. Expected: FAIL (no `no-dir-walk.sh` yet).
@@ -490,7 +494,11 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `events for a client node are ignored`;
   - `needs_you counts blocked, owner outbox and owner checks`;
   - `view sorts needs-you crews first`;
-  - budget benchmark `src-tauri/tests/budget_hot_path.rs`, run with `cargo test --release --test budget_hot_path` in CI on every OS: 1000 iterations each, p95 of a status refresh (50-node fixture, `apply_status` + `tick` + `view`) under 10 ms and of one `apply_event` + `tick` under 1 ms; it prints both p95s and fails over budget. A bite probe adds a 20 ms sleep to `view` and proves it fails.
+  - budget benchmark `src-tauri/tests/budget_hot_path.rs`, run with `cargo test --release --test budget_hot_path` in CI on every OS: run with `-- --test-threads=1` so other tests don't skew it:
+    - 100 warm-up iterations are discarded, then 1000 are measured. The p95 of a status refresh (50-node fixture, `apply_status` + `tick` + `view`) must be under 10 ms, and of one `apply_event` + `tick` under 1 ms.
+    - Over budget, it reruns the measured pass once and fails only if the rerun is over budget too.
+    - It prints both p95s and their headroom (budget ÷ p95). Step 4 records the owner's-Mac numbers in `docs/decisions.md`. A headroom under 10× there is a finding for review, even though it passes.
+    - A bite probe adds a 20 ms sleep to `view` and proves it fails after the rerun.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement** `store.rs`.
 - [ ] **Step 4: Run them.** Expected: PASS.
@@ -723,7 +731,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
 
 **Files:**
 
-- Create: `tools/perf-budget.sh`, `docs/releasing.md`
+- Create: `tools/perf-budget.sh`, `tools/resp-pid.c`, `tools/no-fixtures-in-release.sh`, `docs/releasing.md`
 - Modify: `src-tauri/src/commands.rs` and `src-tauri/src/main.rs` (the fixtures-only `perf_mark` command and SIGUSR1 handler), `ui/src/lib/Shell.svelte` (call `perf_mark` after the first paint with data), `src-tauri/tauri.conf.json` (bundle: DMG and app, macOS 13 minimum, hardened runtime, entitlements without network-server or camera), `README.md`
 
 **Interfaces:**
@@ -743,9 +751,18 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
       2. footprint 10 s after launch with the window open, under 150 MB;
       3. SIGUSR1, then footprint 10 s later, under 50 MB;
       4. reopen to the next `map-drawn`, under 500 ms;
-      5. idle CPU over 60 s with the window open, then 60 s closed: the CPU-time delta (`ps -o time` over the app and its helpers) divided by 60 s, each under 1%;
-      6. memory growth: footprint after 1000 fixture refreshes (a fixtures-only `perf_refresh <n>` command) within 5 MB of after 10.
+      5. idle CPU over 60 s with the window open, then 60 s closed: the CPU-time delta (`ps -o time` over the app and its helpers; it reports to the centisecond, which resolves the 0.6 s a 1% budget allows in 60 s) divided by 60 s, each under 1%;
+      6. memory growth: the median of 5 footprints after 1000 fixture refreshes (the fixtures-only `perf_refresh <n>` command) within 5 MB of the median of 5 after 10.
+    - **Finding the helpers** (for footprint and CPU): WebKit's helpers (`com.apple.WebKit.WebContent`, `.Networking`, `.GPU`) are XPC services started by launchd, not children of the app.
+      - The script counts a `com.apple.WebKit.*` process as ours when its responsible pid is the app's pid. A small C helper, `tools/resp-pid.c`, built by the script, reads that pid with `responsibility_get_pid_responsible_for_pid`, which needs no root.
+      - The Safari-open run proves the method: Safari's helpers have Safari as their responsible pid and must not change the numbers.
+      - If that call isn't available on the runner's macOS, Step 1 records the fallback in `docs/decisions.md`: run with no other WebKit client open and count `com.apple.WebKit.*` processes started after the app's launch.
     - It prints the medians and exits non-zero on any miss.
+  - **Fixture commands never ship:**
+    - `perf_mark`, `perf_refresh`, the SIGUSR1 handler and the `CREWKIT_APP_FIXTURES` runner are each under `#[cfg(feature = "fixtures")]`, including their entries in the invoke handler.
+    - `commands::NAMES` lists the registered command names. A test that runs without the feature asserts that it has no `perf_` entry.
+    - `fixtures` is not a default feature, so `perf-budget.sh` builds its own fixtures binary and never measures the release bundle.
+    - `tools/no-fixtures-in-release.sh` runs on CI on `macos-latest`. It builds the release `.app` with default features and fails if `strings` on its binary finds `perf_mark`, `perf_refresh` or `CREWKIT_APP_FIXTURES`. A bite probe builds with `--features fixtures` and proves it fails.
     - The timings (1 and 4) gate only on the owner's Mac. CI on `macos-latest` gates memory, idle CPU and growth (2, 3, 5, 6) and only prints the timings, because hosted runners are too noisy to gate timings.
   - `docs/releasing.md` covers the local steps: `npm run tauri build` with `APPLE_SIGNING_IDENTITY` from the owner's keychain, `xcrun notarytool submit --keychain-profile <profile> --wait`, `xcrun stapler staple`. No credentials are written to the repo.
 
