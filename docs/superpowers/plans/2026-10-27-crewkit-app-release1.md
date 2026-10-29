@@ -18,6 +18,12 @@
 - A normal windowed app (owner, 2026-10-28: "Yeah normal Mac app please"): Dock icon, standard app menu, a main window with a sidebar (Crews, Doctor, Install & upgrade, Join a node) and a Settings window. The needs-you count is the Dock badge. The menu-bar status item is optional, off by default, and only a dot, a count and a click to open the window.
 - No daemon or helper process of its own. Closing the window keeps the app in the Dock with its webview destroyed; quitting ends everything the app started.
 - Lightness budget (memory is macOS phys_footprint over the app and its WebKit helpers, median of 5): window open on the map, idle, under 150 MB and no CPU when nothing changes; window closed, app in the Dock, under 50 MB and no CPU; cold start to a drawn map from cached state under one second; reopening a closed window from the Dock under 500 ms to a drawn map. A regression past budget blocks the release.
+- Budget (big idea, tiny computer; owner rule 2026-10-28), each number enforced by a test that fails over budget:
+  - **Idle CPU** under 1% averaged over 60 s, window open and idle and window closed, measured as the app's plus its WebKit helpers' CPU time delta divided by wall time (Task 12).
+  - **Hot path at p95:** a status refresh's in-app work (parse a 50-node `crewkit status --json` fixture, `apply_status`, `tick`, `view`) under 10 ms; one herdr event through `apply_event` and `tick` under 1 ms; 1000 iterations, release build, the CLI's own run time excluded (Task 6).
+  - **Steady memory:** the footprint numbers above, plus no growth: footprint after 1000 fixture refreshes is within 5 MB of after 10 (Task 12).
+  - **No work proportional to unrelated directories:** the app reads only named files and sockets and never lists or walks a directory; startup reads only its own cached state file. A CI check enforces it (Task 1c).
+  - Release 1 is Mac-only, so the benchmarks run on the Mac. When a Linux build ships, the same benchmarks run on thehalf's Pi through its operator or a CI-like Docker image, never by ssh from here.
 - Every state change goes through a CLI: crewkit's, or `install.sh` where crewkit delegates. The app never writes crewkit settings, gate keys, `nodes.*`, `registry.*`, `limits.*` or labels.
 - Never read secrets: `~/code/.crew/secrets`, `~/.config/claude-memsync`, `~/.config/crewkit`, age identities, `state_dir/registry/tokens.tsv`, node keys, client-node screen text.
 - No live herdr connection to a node with `boundary: "client"`. Client boxes come only from `crewkit status --json`.
@@ -118,7 +124,7 @@ Owner: code quality must be "impeccable", at least as strict as the owner's thre
 
 - One aggregate required check, `ci-ok`, that needs every job above on `macos-latest`, `ubuntu-latest` and `windows-latest`. Draft PRs run nothing.
 - Conventional Commits checked by commitlint.
-- The perf budget runs on `macos-latest` (Task 12).
+- The perf budget runs on `macos-latest` (Task 12). The hot-path benchmark (Task 6) and the no-directory-walk check (Task 1c) run on every OS.
 
 ### Review
 
@@ -131,6 +137,7 @@ Owner: code quality must be "impeccable", at least as strict as the owner's thre
   ```
 
   or `Verdict: FIX — <findings>`.
+
 - The reviewer reports and doesn't fix. Any push after the reviewed head voids the verdict.
 - Merge only with `gh pr merge --squash --match-head-commit <reviewed sha>`.
 - Security-critical files get an Opus review.
@@ -196,7 +203,7 @@ README.md, LICENSE (MIT)
 
 **Files:**
 
-- *(Revision 2026-10-28: Task 1 was built as a menu-bar app as written here; Task 1b converts it.)*
+- _(Revision 2026-10-28: Task 1 was built as a menu-bar app as written here; Task 1b converts it.)_
 - Create: everything under `src-tauri/` and `ui/` needed for an empty window and a tray icon; `.github/workflows/ci.yml`; the Quality Bar files (Step 4); `README.md`; `docs/json-contract.md` (a copy of Issue A's three shapes and rules from the spec appendix)
 - Test: `src-tauri/src/main.rs` (unit test module), `ui/src/App.test.ts`
 
@@ -302,6 +309,25 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - closing the window leaves the app in the Dock, and a Dock click reopens it;
   - Cmd-Q quits.
 - [ ] **Step 6: Commit** `feat: windowed app shell with dock icon and app menu`.
+
+### Task 1c: Gate tools under test, and the no-directory-walk check
+
+**Files:**
+
+- Create: `tools/no-dir-walk.sh`, tests for `tools/coverage-gate`, `tools/ratchet-guard` and `tools/deps-check` (run by `npm run test:tools`)
+- Modify: `.github/workflows/ci.yml` (the no-dir-walk job, part of `ci-ok`), `lefthook.yml` (pre-push runs it)
+
+**Interfaces:**
+
+- Consumes: Task 1's gate tools; Task 1b's shell
+- Produces:
+  - `tools/no-dir-walk.sh` fails on `read_dir|walkdir|glob\(|WalkDir|readdir|fs\.readdir|opendir` in tracked source under `src-tauri/src/` and `ui/src/` (tests and `tools/` excluded); a bite probe adds a `std::fs::read_dir` call and proves it fails.
+  - Unit tests for each gate tool's pass, fail and malformed-input cases, and a bite probe for every gate Task 1 left unprobed (ledger M2).
+
+- [ ] **Step 1: Write the failing tests** and the bite probes. Expected: FAIL (no `no-dir-walk.sh` yet).
+- [ ] **Step 2: Implement** `tools/no-dir-walk.sh` and wire it into CI and pre-push.
+- [ ] **Step 3: Run** `npm run test:tools` and the probes. Expected: PASS; each probe fails its gate.
+- [ ] **Step 4: Commit** `test: gate tools under test, no-dir-walk check`.
 
 ### Task 2: The crewkit JSON contract types
 
@@ -463,7 +489,8 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
   - `blocked held 5s raises one alert`;
   - `events for a client node are ignored`;
   - `needs_you counts blocked, owner outbox and owner checks`;
-  - `view sorts needs-you crews first`.
+  - `view sorts needs-you crews first`;
+  - budget benchmark `src-tauri/tests/budget_hot_path.rs`, run with `cargo test --release --test budget_hot_path` in CI on every OS: 1000 iterations each, p95 of a status refresh (50-node fixture, `apply_status` + `tick` + `view`) under 10 ms and of one `apply_event` + `tick` under 1 ms; it prints both p95s and fails over budget. A bite probe adds a 20 ms sleep to `view` and proves it fails.
 - [ ] **Step 2: Run them.** Expected: FAIL.
 - [ ] **Step 3: Implement** `store.rs`.
 - [ ] **Step 4: Run them.** Expected: PASS.
@@ -639,6 +666,7 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
     - `opencode` → `["opencode", "--prompt", prompt]`
 
     Before shipping, verify each against that CLI's `--help`. If one differs, fix the mapping and its test.
+
   - `fn detect_agent(prefs) -> Option<String>`: `prefs.agent` if it's on the search path, else the first of `claude`, `codex`, `opencode` that is.
   - `fix_with_agent(check_id, node)` writes the launch script. The script prints the prompt, then waits for `Press Enter to start <agent>, or Ctrl-C to cancel`, then execs `agent_argv`.
   - Doctor UI rows show green/yellow/red, with UNENFORCED as yellow. The action depends on `fix.kind`:
@@ -714,9 +742,11 @@ The owner changed the app's shape after Task 1 was built: "Yeah normal Mac app p
       1. launch to the first `map-drawn`, under 1000 ms;
       2. footprint 10 s after launch with the window open, under 150 MB;
       3. SIGUSR1, then footprint 10 s later, under 50 MB;
-      4. reopen to the next `map-drawn`, under 500 ms.
-    - It prints the four medians and exits non-zero on any miss.
-    - The timings (1 and 4) gate only on the owner's Mac. CI on `macos-latest` gates the two memory numbers and only prints the timings, because hosted runners are too noisy to gate timings.
+      4. reopen to the next `map-drawn`, under 500 ms;
+      5. idle CPU over 60 s with the window open, then 60 s closed: the CPU-time delta (`ps -o time` over the app and its helpers) divided by 60 s, each under 1%;
+      6. memory growth: footprint after 1000 fixture refreshes (a fixtures-only `perf_refresh <n>` command) within 5 MB of after 10.
+    - It prints the medians and exits non-zero on any miss.
+    - The timings (1 and 4) gate only on the owner's Mac. CI on `macos-latest` gates memory, idle CPU and growth (2, 3, 5, 6) and only prints the timings, because hosted runners are too noisy to gate timings.
   - `docs/releasing.md` covers the local steps: `npm run tauri build` with `APPLE_SIGNING_IDENTITY` from the owner's keychain, `xcrun notarytool submit --keychain-profile <profile> --wait`, `xcrun stapler staple`. No credentials are written to the repo.
 
 - [ ] **Step 1: Write the failing check:** run `tools/perf-budget.sh` against the Task 11 build. Expected: it runs and prints numbers; the build fails on any number over budget.
